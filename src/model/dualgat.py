@@ -5,36 +5,17 @@ Architecture (from DualGAT paper):
   and learnable dual-graph attention fusion. Trained with IC loss
   on top of frozen MS-LSTM features.
 """
-import logging
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-from torch_geometric.nn import GATConv
 from datetime import datetime, timedelta
 
 from src.db import schema as db
-from src.model.signal import transform_expert_signal, compute_expert_availability
 from config import (
-    DUALGAT_IN_DIM,
-    DUALGAT_HIDDEN_DIM,
-    DUALGAT_OUT_DIM,
-    DUALGAT_DROPOUT,
-    DUALGAT_LEARNING_RATE,
-    DUALGAT_WEIGHT_DECAY,
-    DUALGAT_EPOCHS,
-    DUALGAT_EARLY_STOP_PATIENCE,
-    DUALGAT_GAT_HEADS,
     CORR_WINDOW_DAYS,
     CORR_THRESHOLD_NORMAL,
     CORR_THRESHOLD_EXPERT,
-    DUALGAT_MODEL_PATH,
-    MSLSTM_SEQUENCE_LENGTH,
 )
-
-logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------

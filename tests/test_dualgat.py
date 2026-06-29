@@ -3,7 +3,6 @@ import pytest
 import torch
 import numpy as np
 import pandas as pd
-from datetime import datetime
 
 
 class TestIndustryGraphBuilder:
@@ -47,11 +46,13 @@ class TestIndustryGraphBuilder:
         """Every node should have a self-loop."""
         stocks = ["AAPL", "MSFT"]
         edge_index = builder.build(stocks, sample_fundamentals)
-        has_self_loop_0 = any(
-            (edge_index[0, i] == 0 and edge_index[1, i] == 0)
-            for i in range(edge_index.shape[1])
-        )
-        assert has_self_loop_0
+        n = len(stocks)
+        for node in range(n):
+            has_self_loop = any(
+                (edge_index[0, i] == node and edge_index[1, i] == node)
+                for i in range(edge_index.shape[1])
+            )
+            assert has_self_loop, f"Node {node} missing self-loop"
 
     def test_unknown_sector_isolated(self, builder):
         """Stocks with unknown sector only have self-loops."""
@@ -95,9 +96,12 @@ class TestCorrelationGraphBuilder:
 
     def test_self_loops_included(self, builder, prepopulated_db):
         """Every node should have a self-loop."""
-        edge_index = builder.build(["AAPL", "MSFT"], "2024-06-15", set())
-        has_self_loop = any(
-            edge_index[0, i] == edge_index[1, i]
-            for i in range(edge_index.shape[1])
-        )
-        assert has_self_loop
+        stocks = ["AAPL", "MSFT"]
+        edge_index = builder.build(stocks, "2024-06-15", set())
+        n = len(stocks)
+        for node in range(n):
+            has_self_loop = any(
+                edge_index[0, i] == edge_index[1, i] == node
+                for i in range(edge_index.shape[1])
+            )
+            assert has_self_loop, f"Node {node} missing self-loop"
