@@ -250,3 +250,76 @@ class TestDualGATPredictor:
         df = predictor.predict(stocks, "2024-06-15")
         assert len(df) == 2
         assert (df["signal_source"] == "dualgat").all()
+
+
+class TestDualGATIntegration:
+    """End-to-end integration tests."""
+
+    def test_full_pipeline_smoke(self, prepopulated_db, tmp_path):
+        """Entire DualGAT pipeline runs without error."""
+        import torch
+        import numpy as np
+        torch.manual_seed(123)
+        np.random.seed(123)
+
+        from src.model.dualgat import DualGATPredictor
+        from src.model.ms_lstm import MSLSTMPredictor
+
+        stocks = ["AAPL", "MSFT"]
+
+        # Save a dummy MS-LSTM model
+        ms_path = tmp_path / "ms_dummy.pt"
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+        ms.save(ms_path)
+
+        # Train DualGAT (minimal)
+        dualgat = DualGATPredictor(hidden=16, out_dim=8, heads=2)
+        history = dualgat.fit(
+            stocks=stocks,
+            start_date="2024-05-20",
+            end_date="2024-06-15",
+            ms_lstm_path=str(ms_path),
+            epochs=2,
+            lr=1e-3,
+        )
+        assert len(history["train_loss"]) == 2
+
+        # Predict
+        df = dualgat.predict(stocks, "2024-06-15")
+        assert len(df) == 2
+        assert "predicted_return" in df.columns
+
+        # Compare with baseline output shape
+        from src.model.baseline import BaselinePredictor
+        baseline = BaselinePredictor()
+        bl_df = baseline.predict(stocks, "2024-06-15", [])
+        assert list(df.columns) == list(bl_df.columns)
+
+    def test_training_loss_finite(self, prepopulated_db, tmp_path):
+        """Training loss is finite at each epoch."""
+        import torch
+        import numpy as np
+        torch.manual_seed(42)
+        np.random.seed(42)
+
+        from src.model.dualgat import DualGATPredictor
+        from src.model.ms_lstm import MSLSTMPredictor
+
+        stocks = ["AAPL", "MSFT"]
+
+        ms_path = tmp_path / "ms_dummy2.pt"
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+        ms.save(ms_path)
+
+        dualgat = DualGATPredictor(hidden=16, out_dim=8, heads=2)
+        history = dualgat.fit(
+            stocks=stocks,
+            start_date="2024-05-20",
+            end_date="2024-06-15",
+            ms_lstm_path=str(ms_path),
+            epochs=3,
+            lr=1e-3,
+        )
+
+        for loss in history["train_loss"]:
+            assert np.isfinite(loss)
