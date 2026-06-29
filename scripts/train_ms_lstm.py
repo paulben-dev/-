@@ -90,7 +90,7 @@ def main():
         records = tracker.trace(date_str)
 
         # MS-LSTM predictions
-        ms_preds = ms_lstm.predict(stocks, date_str, records)
+        ms_preds = ms_lstm.predict(stocks, date_str)
         # Baseline predictions
         bl_preds = baseline.predict(stocks, date_str, records)
 
