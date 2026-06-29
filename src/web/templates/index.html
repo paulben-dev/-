@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DualGAT Stock Predictor</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; }
+        h1 { color: #1a1a2e; }
+        .endpoints { background: #f5f5f5; border-radius: 8px; padding: 1rem; }
+        .endpoint { margin: 0.5rem 0; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <h1>DualGAT Stock Predictor</h1>
+    <p>API v0.1.0 — Expert-augmented stock prediction system.</p>
+    <div class="endpoints">
+        <h2>API Endpoints</h2>
+        <div class="endpoint">GET /api/stocks</div>
+        <div class="endpoint">GET /api/experts?date=YYYY-MM-DD</div>
+        <div class="endpoint">GET /api/predictions?date=YYYY-MM-DD</div>
+        <div class="endpoint">GET /api/backtest?start=YYYY-MM-DD&end=YYYY-MM-DD</div>
+        <div class="endpoint">POST /api/collect?start=YYYY-MM-DD&end=YYYY-MM-DD</div>
+    </div>
+</body>
+</html>
