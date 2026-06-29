@@ -8,13 +8,21 @@ Architecture (from DualGAT paper):
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from datetime import datetime, timedelta
+
+from torch_geometric.nn import GATConv
 
 from src.db import schema as db
 from config import (
     CORR_WINDOW_DAYS,
     CORR_THRESHOLD_NORMAL,
     CORR_THRESHOLD_EXPERT,
+    DUALGAT_IN_DIM,
+    DUALGAT_HIDDEN_DIM,
+    DUALGAT_OUT_DIM,
+    DUALGAT_DROPOUT,
+    DUALGAT_GAT_HEADS,
 )
 
 
@@ -155,3 +163,122 @@ class CorrelationGraphBuilder:
                     targets.append(i)
 
         return torch.tensor([sources, targets], dtype=torch.long)
+
+
+# ------------------------------------------------------------------
+# DualGAT Model
+# ------------------------------------------------------------------
+
+
+class DualGATFusion(nn.Module):
+    """Learnable dual-graph attentive fusion layer.
+
+    Computes per-node scalar scores for each graph, softmax-normalizes
+    into beta weights, and returns a weighted combination of the two
+    graph representations.
+    """
+
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        self.q_ind = nn.Parameter(torch.randn(hidden_dim))
+        self.q_cor = nn.Parameter(torch.randn(hidden_dim))
+
+    def forward(
+        self,
+        h_ind: torch.Tensor,
+        h_cor: torch.Tensor,
+    ) -> torch.Tensor:
+        """Fuse two graph representations with learned weights.
+
+        Args:
+            h_ind: [N, d] industry graph node embeddings.
+            h_cor: [N, d] correlation graph node embeddings.
+
+        Returns:
+            h_fused: [N, d] weighted combination.
+        """
+        # Compute per-node scores
+        score_ind = h_ind @ self.q_ind  # [N]
+        score_cor = h_cor @ self.q_cor  # [N]
+        scores = torch.stack([score_ind, score_cor], dim=1)  # [N, 2]
+        beta = torch.softmax(scores, dim=1)  # [N, 2]
+
+        # Weighted fusion
+        h_fused = beta[:, 0:1] * h_ind + beta[:, 1:2] * h_cor
+        return h_fused
+
+
+class DualGATModel(nn.Module):
+    """2-hop Dual Graph Attention Network.
+
+    Architecture:
+      Hop 1: GATConv on each graph -> DualGATFusion
+      Hop 2: GATConv on each graph -> DualGATFusion
+      MLP: [out_dim -> 1] scalar prediction
+
+    Args:
+        in_dim: Input feature dimension per node (default 3).
+        hidden: Hidden dimension for GAT layers.
+        out_dim: Output dimension after hop 2.
+        heads: Number of attention heads.
+        dropout: Dropout rate.
+    """
+
+    def __init__(
+        self,
+        in_dim: int = DUALGAT_IN_DIM,
+        hidden: int = DUALGAT_HIDDEN_DIM,
+        out_dim: int = DUALGAT_OUT_DIM,
+        heads: int = DUALGAT_GAT_HEADS,
+        dropout: float = DUALGAT_DROPOUT,
+    ):
+        super().__init__()
+        self.in_dim = in_dim
+        self.hidden = hidden
+        self.out_dim = out_dim
+        self.heads = heads
+
+        # Hop 1: GATConv per graph
+        # heads * (hidden // heads) = hidden -> per-head dim = hidden // heads
+        per_head_1 = hidden // heads
+        self.gat_ind_1 = GATConv(in_dim, per_head_1, heads=heads, dropout=dropout)
+        self.gat_cor_1 = GATConv(in_dim, per_head_1, heads=heads, dropout=dropout)
+        self.fusion_1 = DualGATFusion(hidden)
+
+        # Hop 2: GATConv on fused features
+        per_head_2 = out_dim // heads
+        self.gat_ind_2 = GATConv(hidden, per_head_2, heads=heads, dropout=dropout)
+        self.gat_cor_2 = GATConv(hidden, per_head_2, heads=heads, dropout=dropout)
+        self.fusion_2 = DualGATFusion(out_dim)
+
+        # Output MLP
+        self.mlp = nn.Linear(out_dim, 1)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index_ind: torch.Tensor,
+        edge_index_cor: torch.Tensor,
+    ) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Node features [N, in_dim].
+            edge_index_ind: Industry graph edges [2, E_ind].
+            edge_index_cor: Correlation graph edges [2, E_cor].
+
+        Returns:
+            Predicted returns [N].
+        """
+        # Hop 1
+        h_ind_1 = self.gat_ind_1(x, edge_index_ind)  # [N, hidden]
+        h_cor_1 = self.gat_cor_1(x, edge_index_cor)  # [N, hidden]
+        h_fused_1 = self.fusion_1(h_ind_1, h_cor_1)  # [N, hidden]
+
+        # Hop 2
+        h_ind_2 = self.gat_ind_2(h_fused_1, edge_index_ind)  # [N, out_dim]
+        h_cor_2 = self.gat_cor_2(h_fused_1, edge_index_cor)  # [N, out_dim]
+        h_fused_2 = self.fusion_2(h_ind_2, h_cor_2)  # [N, out_dim]
+
+        # Output
+        return self.mlp(h_fused_2).squeeze(-1)  # [N]

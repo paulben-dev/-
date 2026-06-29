@@ -105,3 +105,65 @@ class TestCorrelationGraphBuilder:
                 for i in range(edge_index.shape[1])
             )
             assert has_self_loop, f"Node {node} missing self-loop"
+
+
+class TestDualGATModel:
+    """Unit tests for the DualGAT neural network."""
+
+    @pytest.fixture
+    def model(self):
+        from src.model.dualgat import DualGATModel
+        return DualGATModel(in_dim=3, hidden=64, out_dim=32, heads=4, dropout=0.2)
+
+    @pytest.fixture
+    def dummy_graph(self):
+        """Simple 5-node fully connected graph."""
+        n = 5
+        sources, targets = [], []
+        for i in range(n):
+            sources.append(i)
+            targets.append(i)  # self-loop
+            for j in range(n):
+                if i != j:
+                    sources.append(i)
+                    targets.append(j)
+        return torch.tensor([sources, targets], dtype=torch.long)
+
+    def test_forward_output_shape(self, model, dummy_graph):
+        """forward() returns [N] predictions."""
+        x = torch.randn(5, 3)
+        out = model(x, dummy_graph, dummy_graph)
+        assert out.shape == (5,)
+        assert out.dtype == torch.float32
+
+    def test_different_graphs_produce_different_outputs(self, model):
+        """Different graph structures should change predictions."""
+        x = torch.randn(3, 3)
+        # Graph A: fully connected
+        ga = torch.tensor([[0,0,0,1,1,1,2,2,2], [0,1,2,0,1,2,0,1,2]], dtype=torch.long)
+        # Graph B: only self-loops (isolated)
+        gb = torch.tensor([[0,1,2], [0,1,2]], dtype=torch.long)
+
+        model.eval()
+        with torch.no_grad():
+            out_a = model(x, ga, ga)
+            out_b = model(x, gb, gb)
+        # Different graph structure → different outputs (except by coincidence)
+        assert not torch.allclose(out_a, out_b)
+
+    def test_deterministic_in_eval_mode(self, model, dummy_graph):
+        """Same input + same graph → same output in eval mode."""
+        model.eval()
+        x = torch.randn(5, 3)
+        with torch.no_grad():
+            out1 = model(x, dummy_graph, dummy_graph)
+            out2 = model(x, dummy_graph, dummy_graph)
+        assert torch.allclose(out1, out2)
+
+    def test_dropout_active_in_train_mode(self, model, dummy_graph):
+        """Dropout produces non-deterministic outputs during training."""
+        model.train()
+        x = torch.randn(10, 3)
+        out1 = model(x, dummy_graph, dummy_graph)
+        out2 = model(x, dummy_graph, dummy_graph)
+        assert not torch.allclose(out1, out2)
