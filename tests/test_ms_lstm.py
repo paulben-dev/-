@@ -1,4 +1,6 @@
 """Tests for MS-LSTM model and predictor."""
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -110,3 +112,83 @@ class TestICLoss:
         actual = torch.randn(10)
         loss = ic_loss(pred, actual)
         assert torch.isfinite(loss)
+
+
+class TestMSLSTMPredictor:
+    """Tests for the MSLSTMPredictor training/prediction wrapper."""
+
+    @pytest.fixture
+    def predictor(self):
+        from src.model.ms_lstm import MSLSTMPredictor
+        return MSLSTMPredictor(hidden_dim=16, num_scales=3)
+
+    @pytest.fixture
+    def seeded_predictor(self):
+        """Predictor with fixed seed for reproducibility."""
+        torch.manual_seed(42)
+        np.random.seed(42)
+        from src.model.ms_lstm import MSLSTMPredictor
+        return MSLSTMPredictor(hidden_dim=16, num_scales=3)
+
+    def test_predict_returns_dataframe(self, predictor, prepopulated_db):
+        """predict() returns DataFrame matching BaselinePredictor format."""
+        stocks = ["AAPL", "MSFT"]
+        df = predictor.predict(stocks, "2024-06-15")
+        assert isinstance(df, pd.DataFrame)
+        assert list(df.columns) == ["stock", "date", "predicted_return", "signal_source"]
+        assert len(df) == 2
+        assert df["signal_source"].iloc[0] == "ms_lstm"
+
+    def test_predict_empty_stocks(self, predictor):
+        """predict() handles empty stock list."""
+        df = predictor.predict([], "2024-06-15")
+        assert len(df) == 0
+
+    def test_save_and_load_roundtrip(self, predictor, tmp_path):
+        """Model survives save->load roundtrip and produces identical predictions."""
+        path = tmp_path / "test_model.pt"
+        predictor.save(path)
+        assert path.exists()
+
+        # Load into a new predictor
+        from src.model.ms_lstm import MSLSTMPredictor
+        predictor2 = MSLSTMPredictor()
+        predictor2.load(path)
+
+        # Both should produce same predictions
+        price = torch.randn(5, 30, 5)
+        expert = torch.randn(5, 2)
+        predictor.model.eval()
+        predictor2.model.eval()
+        with torch.no_grad():
+            out1 = predictor.model(price, expert)
+            out2 = predictor2.model(price, expert)
+        assert torch.allclose(out1, out2)
+
+    def test_fit_runs_one_epoch(self, seeded_predictor, prepopulated_db):
+        """fit() completes one epoch on tiny dataset without error."""
+        stocks = ["AAPL", "MSFT"]
+        history = seeded_predictor.fit(
+            stocks=stocks,
+            start_date="2024-05-15",
+            end_date="2024-06-15",
+            epochs=1,
+            lr=1e-3,
+        )
+        assert "train_loss" in history
+        assert len(history["train_loss"]) == 1
+        assert isinstance(history["train_loss"][0], float)
+
+    def test_predict_after_fit(self, seeded_predictor, prepopulated_db):
+        """predict() works after a minimal fit."""
+        stocks = ["AAPL", "MSFT"]
+        seeded_predictor.fit(
+            stocks=stocks,
+            start_date="2024-05-15",
+            end_date="2024-06-15",
+            epochs=1,
+            lr=1e-3,
+        )
+        df = seeded_predictor.predict(stocks, "2024-06-15")
+        assert len(df) == 2
+        assert df["signal_source"].iloc[0] == "ms_lstm"
