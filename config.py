@@ -11,12 +11,17 @@ DEFAULT_TICKERS = [
     "NFLX", "ADBE",
 ]
 
+# Demo mode — set True when using < 2 years of data
+DEMO_MODE = True
+
 # Expert Tracing (Algorithm 1 from paper)
-EXPERT_RECENT_N = 20          # Number of recent posts to evaluate
-EXPERT_MIN_DAYS = 5           # Minimum unique trading days in recent posts
-EXPERT_RECENT_THRESHOLD = 0.80  # P2: recent accuracy >= 80% → expert
-EXPERT_LONG_THRESHOLD = 0.65    # P1: long-term accuracy >= 65% → expert
-EXPERT_LONG_WINDOW_DAYS = 730   # T = 2 years in days
+# Paper values: N=20, K=5, P2=0.80, P1=0.65, T=730 days
+# Demo values are relaxed for shorter data windows
+EXPERT_RECENT_N = 15 if DEMO_MODE else 20
+EXPERT_MIN_DAYS = 3 if DEMO_MODE else 5
+EXPERT_RECENT_THRESHOLD = 0.65 if DEMO_MODE else 0.80  # P2
+EXPERT_LONG_THRESHOLD = 0.55 if DEMO_MODE else 0.65    # P1
+EXPERT_LONG_WINDOW_DAYS = 60 if DEMO_MODE else 730     # T
 
 # Signal Transformation
 SIGNAL_LOOKBACK_DAYS = 30     # Days for average return calculation
@@ -43,3 +48,14 @@ API_PORT = 8000
 REDDIT_SUBREDDITS = ["wallstreetbets", "stocks"]
 REDDIT_POST_LIMIT = 100       # Posts per subreddit per fetch
 STOCKTWITS_POST_LIMIT = 50    # Posts per stock per fetch
+
+# MS-LSTM (v0.2)
+MSLSTM_HIDDEN_DIM = 64
+MSLSTM_NUM_SCALES = 5          # strides: 1, 2, 4, 8, 16
+MSLSTM_DROPOUT = 0.2
+MSLSTM_LEARNING_RATE = 1e-3
+MSLSTM_WEIGHT_DECAY = 1e-5
+MSLSTM_EPOCHS = 100
+MSLSTM_EARLY_STOP_PATIENCE = 10
+MSLSTM_SEQUENCE_LENGTH = 30    # Lookback window in trading days
+MSLSTM_MODEL_PATH = ROOT_DIR / "data" / "ms_lstm_model.pt"
