@@ -7,31 +7,10 @@ Architecture (from DualGAT paper):
 
 Trained with cross-sectional IC loss: 1 - Pearson_correlation(pred, actual).
 """
-import logging
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
-from datetime import datetime, timedelta
 
-from src.data.models import ExpertRecord
-from src.db import schema as db
-from src.model.signal import transform_expert_signal, compute_expert_availability
-from config import (
-    MSLSTM_HIDDEN_DIM,
-    MSLSTM_NUM_SCALES,
-    MSLSTM_DROPOUT,
-    MSLSTM_LEARNING_RATE,
-    MSLSTM_WEIGHT_DECAY,
-    MSLSTM_EPOCHS,
-    MSLSTM_EARLY_STOP_PATIENCE,
-    MSLSTM_SEQUENCE_LENGTH,
-    MSLSTM_MODEL_PATH,
-)
-
-logger = logging.getLogger(__name__)
+from config import MSLSTM_HIDDEN_DIM, MSLSTM_NUM_SCALES, MSLSTM_DROPOUT
 
 
 def ic_loss(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:

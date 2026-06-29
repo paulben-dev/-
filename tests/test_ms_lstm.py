@@ -1,9 +1,6 @@
 """Tests for MS-LSTM model and predictor."""
 import pytest
 import torch
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta
 
 from src.model.ms_lstm import MSLSTMModel, ic_loss
 
@@ -41,14 +38,35 @@ class TestMSLSTMModel:
         assert torch.allclose(out1, out2)
 
     def test_different_strides_reduce_sequence(self, model):
-        """Each LSTM branch gets a different number of time steps."""
-        strides = model.strides  # [1, 2, 4, 8, 16]
+        """Each LSTM branch receives a correctly-stride-sampled input sequence."""
         seq_len = 30
-        for s in strides:
-            steps = seq_len // s + (1 if seq_len % s else 0)
-            # With 30 and stride s: 30/s rounded up
-            expected_steps = (seq_len + s - 1) // s
-            assert expected_steps >= 2  # At least 2 steps for LSTM
+        N = 4
+        price = torch.randn(N, seq_len, model.input_dim)
+        expert = torch.randn(N, model.expert_feat_dim)
+
+        captured_steps = {}
+        hooks = []
+
+        def make_hook(idx):
+            def hook(module, input_, output_):
+                captured_steps[idx] = input_[0].shape[1]  # sequence length
+            return hook
+
+        for i, lstm in enumerate(model.lstms):
+            hooks.append(lstm.register_forward_hook(make_hook(i)))
+
+        try:
+            _ = model(price, expert)
+        finally:
+            for h in hooks:
+                h.remove()
+
+        for i, stride in enumerate(model.strides):
+            expected_steps = (seq_len + stride - 1) // stride  # ceil(seq_len / stride)
+            assert captured_steps[i] == expected_steps, (
+                f"Branch {i} (stride={stride}) got {captured_steps[i]} steps, "
+                f"expected {expected_steps}"
+            )
 
     def test_dropout_active_in_train(self, model):
         """Dropout is active during training."""
