@@ -29,6 +29,7 @@ from config import (
     DUALGAT_WEIGHT_DECAY,
     DUALGAT_EPOCHS,
     DUALGAT_EARLY_STOP_PATIENCE,
+    MSLSTM_MODEL_PATH,
 )
 
 logger = logging.getLogger(__name__)
@@ -323,12 +324,22 @@ def _get_trading_dates(stocks: list[str], start_date: str, end_date: str) -> lis
 
 
 def _build_input_features(
-    stocks: list[str], date_str: str, device: str
+    stocks: list[str], date_str: str, device: str,
+    ms_lstm=None, expert_records=None,
 ) -> tuple[torch.Tensor, list[str]]:
     """Build 3-dim input features for DualGAT.
 
     Features: [MS-LSTM prediction, expert_available, expert_signal]
     All three default to 0 when data is missing.
+
+    Args:
+        stocks: Ordered list of stock tickers.
+        date_str: Target date (YYYY-MM-DD).
+        device: Torch device string.
+        ms_lstm: Optional MSLSTMPredictor for populating feature 0.
+        expert_records: Optional pre-fetched ExpertRecord list (avoids
+            redundant ExpertTracker.trace() calls when the caller has
+            already fetched them).
 
     Returns:
         (features_tensor [N, 3], kept_stocks)
@@ -336,21 +347,35 @@ def _build_input_features(
     Raises:
         _DataError: If fewer than 3 stocks have valid data.
     """
-    from src.expert.tracker import ExpertTracker
     from src.model.signal import transform_expert_signal, compute_expert_availability
 
-    # Expert features (from v0.1 pipeline)
-    tracker = ExpertTracker()
-    records = tracker.trace(date_str)
+    # Expert features — use pre-fetched records if provided (H1 fix)
+    if expert_records is not None:
+        records = expert_records
+    else:
+        from src.expert.tracker import ExpertTracker
+        tracker = ExpertTracker()
+        records = tracker.trace(date_str)
+
     avail = compute_expert_availability(records, stocks)
     signals = transform_expert_signal(records, date_str)
+
+    # MS-LSTM predictions (CRITICAL fix: use real predictions instead of 0.0)
+    ms_pred_map = {}
+    if ms_lstm is not None:
+        try:
+            ms_preds = ms_lstm.predict(stocks, date_str)
+            ms_pred_map = dict(zip(ms_preds["stock"], ms_preds["predicted_return"]))
+        except Exception:
+            pass  # Fall back to zeros
 
     features = []
     kept = []
 
     for stock in stocks:
+        ms_val = ms_pred_map.get(stock, 0.0)
         features.append([
-            0.0,  # MS-LSTM prediction (placeholder, filled during training)
+            ms_val,
             float(avail.get(stock, 0)),
             float(signals.get(stock, 0.0)),
         ])
@@ -378,7 +403,6 @@ def _build_day_tensors_dualgat(
     stocks: list[str],
     date_str: str,
     ms_lstm,
-    edge_index_ind: torch.Tensor,
     corr_builder: CorrelationGraphBuilder,
     device: str,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
@@ -486,6 +510,7 @@ class DualGATPredictor:
         self._ind_builder = IndustryGraphBuilder()
         self._corr_builder = CorrelationGraphBuilder()
         self._edge_index_ind: torch.Tensor | None = None
+        self._ms_lstm = None  # Cached MS-LSTM for inference (set by fit())
 
     # ------------------------------------------------------------------
     # Public API
@@ -517,6 +542,7 @@ class DualGATPredictor:
         ms_lstm = MSLSTMPredictor()
         ms_lstm.load(ms_lstm_path)
         ms_lstm.model.eval()
+        self._ms_lstm = ms_lstm  # Cache for inference (CRITICAL fix)
 
         # Build static industry graph
         from src.data.yfinance import YFinanceCollector
@@ -550,7 +576,7 @@ class DualGATPredictor:
             for date_str in train_dates:
                 try:
                     x, targets, edge_cor = _build_day_tensors_dualgat(
-                        stocks, date_str, ms_lstm, self._edge_index_ind, self._corr_builder, self.device
+                        stocks, date_str, ms_lstm, self._corr_builder, self.device
                     )
                 except _DataError:
                     continue
@@ -590,31 +616,80 @@ class DualGATPredictor:
         history["best_epoch"] = int(np.argmax(history["val_ic"]) + 1) if history["val_ic"] else 0
         return history
 
-    def predict(self, stocks: list[str], date_str: str) -> pd.DataFrame:
-        """Generate return predictions for all stocks on a given date."""
+    def predict(self, stocks: list[str], date_str: str,
+                ms_lstm_path: str | None = None) -> pd.DataFrame:
+        """Generate return predictions for all stocks on a given date.
+
+        Args:
+            stocks: List of ticker symbols.
+            date_str: Target date (YYYY-MM-DD).
+            ms_lstm_path: Optional path to a pre-trained MS-LSTM model.
+                Overrides the model stored during fit() and the default
+                MSLSTM_MODEL_PATH config. The MS-LSTM is used to populate
+                input feature 0 (CRITICAL fix: eliminates train/inference skew).
+
+        Returns:
+            pd.DataFrame with columns [stock, date, predicted_return,
+            signal_source].
+        """
         if not stocks:
             return pd.DataFrame(columns=["stock", "date", "predicted_return", "signal_source"])
 
         self.model.eval()
 
-        # Build correlation graph for this date
+        # --- Resolve MS-LSTM model (CRITICAL fix) ---
+        ms_lstm = None
+        if ms_lstm_path is not None:
+            from src.model.ms_lstm import MSLSTMPredictor
+            ms_lstm = MSLSTMPredictor()
+            ms_lstm.load(ms_lstm_path)
+            ms_lstm.model.eval()
+        elif self._ms_lstm is not None:
+            ms_lstm = self._ms_lstm
+        else:
+            # Fallback: try default path from config
+            try:
+                from src.model.ms_lstm import MSLSTMPredictor
+                ms_lstm = MSLSTMPredictor()
+                ms_lstm.load(MSLSTM_MODEL_PATH)
+                ms_lstm.model.eval()
+                logger.info("Loaded MS-LSTM from %s for inference", MSLSTM_MODEL_PATH)
+            except Exception:
+                logger.warning(
+                    "predict() called before fit() and no MS-LSTM model available. "
+                    "Feature 0 (MS-LSTM prediction) will be zero-filled. "
+                    "Predictions may be unreliable. Call fit() first, or provide "
+                    "ms_lstm_path to load a pre-trained MS-LSTM."
+                )
+
+        # --- Fetch expert data once (H1 fix) ---
         try:
             from src.expert.tracker import ExpertTracker
             tracker = ExpertTracker()
             records = tracker.trace(date_str)
             expert_stocks = set(r.stock for r in records if r.expert_type != "none")
         except Exception:
+            records = None
             expert_stocks = set()
 
+        # --- Build correlation graph ---
         edge_cor = self._corr_builder.build(stocks, date_str, expert_stocks).to(self.device)
 
-        # Build input features
+        # --- Build input features (CRITICAL + H1 fix: pass ms_lstm and records) ---
         try:
-            x, kept_stocks = _build_input_features(stocks, date_str, self.device)
+            x, kept_stocks = _build_input_features(
+                stocks, date_str, self.device,
+                ms_lstm=ms_lstm, expert_records=records,
+            )
         except _DataError:
             return _empty_predictions(stocks, date_str, "dualgat")
 
+        # --- H3 fix: warn when model not fitted ---
         if self._edge_index_ind is None or self._edge_index_ind.shape[1] == 0:
+            logger.warning(
+                "Industry graph not built. Call fit() before predict() for "
+                "meaningful predictions. Returning zero-filled fallback."
+            )
             return _empty_predictions(stocks, date_str, "dualgat")
 
         with torch.no_grad():
@@ -687,7 +762,7 @@ class DualGATPredictor:
         for date_str in dates:
             try:
                 x, targets, edge_cor = _build_day_tensors_dualgat(
-                    stocks, date_str, ms_lstm, self._edge_index_ind, self._corr_builder, self.device
+                    stocks, date_str, ms_lstm, self._corr_builder, self.device
                 )
             except _DataError:
                 continue
