@@ -26,7 +26,6 @@ from config import (
     MSLSTM_SEQUENCE_LENGTH,
     MSLSTM_WEIGHT_DECAY,
 )
-from src.data.models import ExpertRecord
 from src.db import schema as db
 
 logger = logging.getLogger(__name__)
@@ -144,7 +143,6 @@ class MSLSTMPredictor:
         self.expert_feat_dim = expert_feat_dim
         self.dropout = dropout
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._trained = False
 
         self.model = MSLSTMModel(
             input_dim=input_dim,
@@ -163,7 +161,6 @@ class MSLSTMPredictor:
         stocks: list[str],
         start_date: str,
         end_date: str,
-        expert_records_by_date: dict[str, list[ExpertRecord]] | None = None,
         epochs: int = MSLSTM_EPOCHS,
         lr: float = MSLSTM_LEARNING_RATE,
     ) -> dict:
@@ -173,7 +170,6 @@ class MSLSTMPredictor:
             stocks: List of ticker symbols.
             start_date: Training start date (YYYY-MM-DD).
             end_date: Training end date (YYYY-MM-DD).
-            expert_records_by_date: Optional pre-computed expert records.
             epochs: Maximum training epochs.
             lr: Learning rate for Adam optimizer.
 
@@ -205,7 +201,7 @@ class MSLSTMPredictor:
             epoch_losses = []
             for date_str in train_dates:
                 try:
-                    price_t, expert_t, targets_t = _build_day_tensors(
+                    price_t, expert_t, targets_t, _kept = _build_day_tensors(
                         stocks, date_str, self.device
                     )
                 except _DataError:
@@ -247,7 +243,6 @@ class MSLSTMPredictor:
         if best_state is not None:
             self.model.load_state_dict(best_state)
 
-        self._trained = True
         history["best_epoch"] = int(
             (np.argmax(history["val_ic"]) + 1) if history["val_ic"] else 0
         )
@@ -257,38 +252,30 @@ class MSLSTMPredictor:
         self,
         stocks: list[str],
         date_str: str,
-        expert_records: list[ExpertRecord] | None = None,
     ) -> pd.DataFrame:
         """Generate return predictions for all stocks on a given date.
 
         Compatible interface with BaselinePredictor.predict().
         """
         if not stocks:
-            return pd.DataFrame(
-                columns=["stock", "date", "predicted_return", "signal_source"]
-            )
+            return self._empty_predictions([], date_str)
 
         self.model.eval()
         try:
-            price_t, expert_t, _ = _build_day_tensors(stocks, date_str, self.device)
+            price_t, expert_t, _, kept_stocks = _build_day_tensors(
+                stocks, date_str, self.device
+            )
         except _DataError:
-            # Return zero predictions when data is insufficient
-            return pd.DataFrame([
-                {"stock": s, "date": date_str, "predicted_return": 0.0, "signal_source": "ms_lstm"}
-                for s in stocks
-            ])
+            return self._empty_predictions(stocks, date_str)
 
         if price_t is None:
-            return pd.DataFrame([
-                {"stock": s, "date": date_str, "predicted_return": 0.0, "signal_source": "ms_lstm"}
-                for s in stocks
-            ])
+            return self._empty_predictions(stocks, date_str)
 
         with torch.no_grad():
             preds = self.model(price_t, expert_t).cpu().numpy()
 
         df = pd.DataFrame({
-            "stock": stocks,
+            "stock": kept_stocks,
             "date": date_str,
             "predicted_return": preds,
             "signal_source": "ms_lstm",
@@ -337,12 +324,25 @@ class MSLSTMPredictor:
         ).to(self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
-        self._trained = True
         logger.info(f"Model loaded from {path}")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _empty_predictions(
+        self, stocks: list[str], date_str: str
+    ) -> pd.DataFrame:
+        """Return zero-prediction DataFrame for the given stocks."""
+        if not stocks:
+            return pd.DataFrame(
+                columns=["stock", "date", "predicted_return", "signal_source"]
+            )
+        return pd.DataFrame([
+            {"stock": s, "date": date_str,
+             "predicted_return": 0.0, "signal_source": "ms_lstm"}
+            for s in stocks
+        ])
 
     def _evaluate_ic(self, dates: list[str], stocks: list[str]) -> float:
         """Compute mean IC over a list of validation dates."""
@@ -350,7 +350,7 @@ class MSLSTMPredictor:
         ics = []
         for date_str in dates:
             try:
-                price_t, expert_t, targets_t = _build_day_tensors(
+                price_t, expert_t, targets_t, _kept = _build_day_tensors(
                     stocks, date_str, self.device
                 )
             except _DataError:
@@ -398,7 +398,7 @@ def _get_trading_dates(
 
 def _build_day_tensors(
     stocks: list[str], date_str: str, device: str
-) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, list[str]]:
     """Build feature and target tensors for a single trading day.
 
     Args:
@@ -420,7 +420,6 @@ def _build_day_tensors(
     all_prices = db.get_prices(stocks, window_start, date_str)
 
     price_features_list = []
-    expert_features_list = []
     targets_list = []
     kept_stocks = []
 
@@ -445,13 +444,13 @@ def _build_day_tensors(
     expert_features_list = _build_expert_features(kept_stocks, date_str)
 
     if not price_features_list:
-        return None, None, None
+        return None, None, None, []
 
     price_t = torch.stack(price_features_list).to(device)
     expert_t = torch.tensor(expert_features_list, dtype=torch.float32, device=device)
     targets_t = torch.tensor(targets_list, dtype=torch.float32, device=device)
 
-    return price_t, expert_t, targets_t
+    return price_t, expert_t, targets_t, kept_stocks
 
 
 def _build_stock_features(
@@ -491,6 +490,14 @@ def _build_stock_features(
     first_close = arr[0, 3]
     if first_close > 0:
         arr[:, :4] /= first_close
+
+    # Pad to exactly MSLSTM_SEQUENCE_LENGTH time steps with zeros at the beginning.
+    # This guarantees all stocks in a batch have uniform sequence length so
+    # torch.stack() does not fail.
+    if arr.shape[0] < MSLSTM_SEQUENCE_LENGTH:
+        pad_count = MSLSTM_SEQUENCE_LENGTH - arr.shape[0]
+        pad = np.zeros((pad_count, arr.shape[1]), dtype=np.float32)
+        arr = np.concatenate([pad, arr], axis=0)
 
     return torch.tensor(arr, dtype=torch.float32)
 
