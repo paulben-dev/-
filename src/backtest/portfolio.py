@@ -77,7 +77,7 @@ def run_backtest(
         long_ret = _get_portfolio_return(portfolio["long"], date_str, next_date)
         short_ret = _get_portfolio_return(portfolio["short"], date_str, next_date)
 
-        daily_ret = (long_ret - short_ret) / 2 - transaction_cost
+        daily_ret = (long_ret - short_ret) / 2
         daily_returns.append(daily_ret)
         daily_long_short.append({
             "date": date_str,
