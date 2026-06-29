@@ -94,17 +94,17 @@ def main():
         ms_preds = ms_lstm.predict(stocks, date_str)
         bl_preds = baseline.predict(stocks, date_str, records)
 
-        prices = get_prices(stocks, date_str, date_str)
+        yesterday_str = (datetime.fromisoformat(date_str) - timedelta(days=5)).strftime("%Y-%m-%d")
+        prices = get_prices(stocks, yesterday_str, date_str)
         actuals = {}
         for stock in stocks:
             sp = prices.get(stock, [])
             if len(sp) >= 2:
                 sp.sort(key=lambda x: x["date"])
-                for i, p in enumerate(sp):
-                    if p["date"] == date_str and i > 0:
-                        prev = sp[i - 1]["close"]
-                        curr = p["close"]
-                        actuals[stock] = (curr - prev) / prev if prev else 0.0
+                prev_close = sp[0]["close"]
+                curr_close = sp[-1]["close"]
+                if prev_close and prev_close != 0:
+                    actuals[stock] = (curr_close - prev_close) / prev_close
 
         if len(actuals) < 3:
             continue
@@ -118,13 +118,18 @@ def main():
         ms_ics.append(compute_ic(ms_series, actual_series))
         bl_ics.append(compute_ic(bl_series, actual_series))
 
+    def _safe_mean(seq):
+        return np.mean(seq) if seq else float("nan")
+
     logger.info("=" * 50)
-    logger.info(f"DualGAT  mean IC: {np.mean(dg_ics):.4f}  ({len(dg_ics)} days)")
-    logger.info(f"MS-LSTM  mean IC: {np.mean(ms_ics):.4f}  ({len(ms_ics)} days)")
-    logger.info(f"Baseline mean IC: {np.mean(bl_ics):.4f}  ({len(bl_ics)} days)")
+    logger.info(f"DualGAT  mean IC: {_safe_mean(dg_ics):.4f}  ({len(dg_ics)} days)")
+    logger.info(f"MS-LSTM  mean IC: {_safe_mean(ms_ics):.4f}  ({len(ms_ics)} days)")
+    logger.info(f"Baseline mean IC: {_safe_mean(bl_ics):.4f}  ({len(bl_ics)} days)")
     logger.info("=" * 50)
 
-    if np.mean(dg_ics) > np.mean(ms_ics):
+    dg_mean = _safe_mean(dg_ics)
+    ms_mean = _safe_mean(ms_ics)
+    if not np.isnan(dg_mean) and not np.isnan(ms_mean) and dg_mean > ms_mean:
         logger.info("DualGAT outperforms MS-LSTM!")
     else:
         logger.info("DualGAT does not beat MS-LSTM. Consider tuning.")
