@@ -126,16 +126,23 @@ async def get_backtest(
     tracker = get_tracker()
     predictor = get_predictor()
 
-    # Generate predictions for each day
+    # Collect all trading dates with price data to avoid weekends/holidays
+    from src.db import schema as db_schema
+    all_prices = db_schema.get_prices(DEFAULT_TICKERS, start, end)
+    trading_dates = set()
+    for stock_prices in all_prices.values():
+        for p in stock_prices:
+            trading_dates.add(p["date"])
+    trading_dates = sorted(trading_dates)
+
+    # Generate predictions for each trading day
     all_preds = []
-    current = datetime.fromisoformat(start)
-    end_dt = datetime.fromisoformat(end)
-    while current <= end_dt:
-        date_str = current.strftime("%Y-%m-%d")
+    for date_str in trading_dates:
+        if date_str < start or date_str > end:
+            continue
         expert_records = tracker.trace(date_str)
         pred_df = predictor.predict(DEFAULT_TICKERS, date_str, expert_records)
         all_preds.append(pred_df)
-        current += timedelta(days=1)
 
     if not all_preds:
         raise HTTPException(404, "No predictions generated for the date range")
@@ -208,5 +215,11 @@ async def trigger_collection(
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    """Render the main dashboard."""
+    """Render the English dashboard."""
     return templates.TemplateResponse(request, "index.html")
+
+
+@app.get("/zh", response_class=HTMLResponse)
+async def dashboard_zh(request: Request):
+    """Render the Chinese dashboard."""
+    return templates.TemplateResponse(request, "index_zh.html")
