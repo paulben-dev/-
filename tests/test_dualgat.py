@@ -167,3 +167,86 @@ class TestDualGATModel:
         out1 = model(x, dummy_graph, dummy_graph)
         out2 = model(x, dummy_graph, dummy_graph)
         assert not torch.allclose(out1, out2)
+
+
+class TestDualGATPredictor:
+    """Tests for the DualGATPredictor training/prediction wrapper."""
+
+    @pytest.fixture
+    def predictor(self):
+        from src.model.dualgat import DualGATPredictor
+        return DualGATPredictor(hidden=16, out_dim=8, heads=2)
+
+    def test_predict_returns_dataframe(self, predictor, prepopulated_db):
+        """predict() returns DataFrame matching baseline format."""
+        stocks = ["AAPL", "MSFT"]
+        df = predictor.predict(stocks, "2024-06-15")
+        assert isinstance(df, pd.DataFrame)
+        assert list(df.columns) == ["stock", "date", "predicted_return", "signal_source"]
+        assert len(df) == 2
+        assert (df["signal_source"] == "dualgat").all()
+
+    def test_predict_empty_stocks(self, predictor):
+        """predict() handles empty stock list."""
+        df = predictor.predict([], "2024-06-15")
+        assert len(df) == 0
+
+    def test_save_and_load_roundtrip(self, predictor, tmp_path):
+        """Model survives save->load roundtrip."""
+        path = tmp_path / "test_dualgat.pt"
+        predictor.save(path)
+        assert path.exists()
+
+        from src.model.dualgat import DualGATPredictor
+        predictor2 = DualGATPredictor()
+        predictor2.load(path)
+
+        x = torch.randn(5, 3)
+        e = torch.tensor([[0,0,1,1,2,2,3,3,4,4], [0,1,0,2,1,3,2,4,3,4]], dtype=torch.long)
+        predictor.model.eval()
+        predictor2.model.eval()
+        with torch.no_grad():
+            out1 = predictor.model(x, e, e)
+            out2 = predictor2.model(x, e, e)
+        assert torch.allclose(out1, out2)
+
+    def test_fit_runs_one_epoch(self, predictor, prepopulated_db, tmp_path):
+        """fit() completes one epoch without error."""
+        # Save a dummy MS-LSTM model first
+        from src.model.ms_lstm import MSLSTMPredictor
+        ms_path = tmp_path / "dummy_ms.pt"
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+        ms.save(ms_path)
+
+        stocks = ["AAPL", "MSFT"]
+        history = predictor.fit(
+            stocks=stocks,
+            start_date="2024-05-20",
+            end_date="2024-06-15",
+            ms_lstm_path=str(ms_path),
+            epochs=1,
+            lr=1e-3,
+        )
+        assert "train_loss" in history
+        assert len(history["train_loss"]) == 1
+        assert isinstance(history["train_loss"][0], float)
+
+    def test_predict_after_fit(self, predictor, prepopulated_db, tmp_path):
+        """predict() works after a minimal fit."""
+        from src.model.ms_lstm import MSLSTMPredictor
+        ms_path = tmp_path / "dummy_ms2.pt"
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+        ms.save(ms_path)
+
+        stocks = ["AAPL", "MSFT"]
+        predictor.fit(
+            stocks=stocks,
+            start_date="2024-05-20",
+            end_date="2024-06-15",
+            ms_lstm_path=str(ms_path),
+            epochs=1,
+            lr=1e-3,
+        )
+        df = predictor.predict(stocks, "2024-06-15")
+        assert len(df) == 2
+        assert (df["signal_source"] == "dualgat").all()

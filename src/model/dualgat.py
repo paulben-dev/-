@@ -5,11 +5,13 @@ Architecture (from DualGAT paper):
   and learnable dual-graph attention fusion. Trained with IC loss
   on top of frozen MS-LSTM features.
 """
+import logging
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from torch_geometric.nn import GATConv
 
@@ -23,7 +25,13 @@ from config import (
     DUALGAT_OUT_DIM,
     DUALGAT_DROPOUT,
     DUALGAT_GAT_HEADS,
+    DUALGAT_LEARNING_RATE,
+    DUALGAT_WEIGHT_DECAY,
+    DUALGAT_EPOCHS,
+    DUALGAT_EARLY_STOP_PATIENCE,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -282,3 +290,414 @@ class DualGATModel(nn.Module):
 
         # Output
         return self.mlp(h_fused_2).squeeze(-1)  # [N]
+
+
+# ------------------------------------------------------------------
+# Module-level helpers
+# ------------------------------------------------------------------
+
+class _DataError(Exception):
+    """Raised when data for a date is insufficient."""
+
+
+def _ic_loss(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """Cross-sectional IC loss: 1 - Pearson correlation."""
+    vx = predictions - predictions.mean()
+    vy = targets - targets.mean()
+    numerator = (vx * vy).sum()
+    denominator = torch.sqrt((vx ** 2).sum()) * torch.sqrt((vy ** 2).sum())
+    corr = numerator / (denominator + 1e-8)
+    return 1.0 - corr
+
+
+def _get_trading_dates(stocks: list[str], start_date: str, end_date: str) -> list[str]:
+    """Return sorted trading dates with price data for all stocks."""
+    all_prices = db.get_prices(stocks, start_date, end_date)
+    if not all_prices:
+        return []
+    date_sets = [set(p["date"] for p in all_prices.get(s, [])) for s in stocks]
+    common = date_sets[0]
+    for ds in date_sets[1:]:
+        common = common & ds
+    return sorted(common)
+
+
+def _build_input_features(
+    stocks: list[str], date_str: str, device: str
+) -> tuple[torch.Tensor, list[str]]:
+    """Build 3-dim input features for DualGAT.
+
+    Features: [MS-LSTM prediction, expert_available, expert_signal]
+    All three default to 0 when data is missing.
+
+    Returns:
+        (features_tensor [N, 3], kept_stocks)
+
+    Raises:
+        _DataError: If fewer than 3 stocks have valid data.
+    """
+    from src.expert.tracker import ExpertTracker
+    from src.model.signal import transform_expert_signal, compute_expert_availability
+
+    # Expert features (from v0.1 pipeline)
+    tracker = ExpertTracker()
+    records = tracker.trace(date_str)
+    avail = compute_expert_availability(records, stocks)
+    signals = transform_expert_signal(records, date_str)
+
+    features = []
+    kept = []
+
+    for stock in stocks:
+        features.append([
+            0.0,  # MS-LSTM prediction (placeholder, filled during training)
+            float(avail.get(stock, 0)),
+            float(signals.get(stock, 0.0)),
+        ])
+        kept.append(stock)
+
+    if len(kept) < 3:
+        raise _DataError(f"Insufficient stocks for {date_str}")
+
+    return torch.tensor(features, dtype=torch.float32, device=device), kept
+
+
+def _get_return_for_date(prices: list[dict], date_str: str) -> float:
+    """Compute actual return ratio for a stock on a given date."""
+    sorted_prices = sorted(prices, key=lambda x: x["date"])
+    for i, p in enumerate(sorted_prices):
+        if p["date"] == date_str and i > 0:
+            prev_close = sorted_prices[i - 1]["close"]
+            curr_close = p["close"]
+            if prev_close > 0:
+                return (curr_close - prev_close) / prev_close
+    raise _DataError(f"No return data for {date_str}")
+
+
+def _build_day_tensors_dualgat(
+    stocks: list[str],
+    date_str: str,
+    ms_lstm,
+    edge_index_ind: torch.Tensor,
+    corr_builder: CorrelationGraphBuilder,
+    device: str,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    """Build feature tensors, targets, and correlation graph for one day.
+
+    Returns:
+        (x, targets, edge_cor) — each is a tensor or None.
+
+    Raises:
+        _DataError: When data is insufficient.
+    """
+    from config import MSLSTM_SEQUENCE_LENGTH
+    from src.expert.tracker import ExpertTracker
+    from src.model.signal import transform_expert_signal, compute_expert_availability
+
+    target_date = datetime.fromisoformat(date_str)
+    window_start = (target_date - timedelta(days=MSLSTM_SEQUENCE_LENGTH + 10)).strftime("%Y-%m-%d")
+    all_prices = db.get_prices(stocks, window_start, date_str)
+
+    # Build input features and targets
+    tracker = ExpertTracker()
+    records = tracker.trace(date_str)
+    avail = compute_expert_availability(records, stocks)
+    signals = transform_expert_signal(records, date_str)
+
+    # Get MS-LSTM predictions for this date
+    ms_preds = ms_lstm.predict(stocks, date_str)
+    ms_pred_map = dict(zip(ms_preds["stock"], ms_preds["predicted_return"]))
+
+    features = []
+    targets_list = []
+    kept_stocks = []
+
+    for stock in stocks:
+        # MS-LSTM prediction
+        ms_val = ms_pred_map.get(stock, 0.0)
+        # Expert features
+        exp_avail = float(avail.get(stock, 0))
+        exp_sig = float(signals.get(stock, 0.0))
+
+        features.append([ms_val, exp_avail, exp_sig])
+        kept_stocks.append(stock)
+
+        # Target: actual return for this date
+        sp = all_prices.get(stock, [])
+        target_val = _get_return_for_date(sp, date_str)
+        targets_list.append(target_val)
+
+    if len(kept_stocks) < 3:
+        raise _DataError(f"Insufficient stocks for {date_str}")
+
+    # Build correlation graph
+    expert_stocks = set(r.stock for r in records if r.expert_type != "none")
+    edge_cor = corr_builder.build(stocks, date_str, expert_stocks).to(device)
+
+    x = torch.tensor(features, dtype=torch.float32, device=device)
+    targets = torch.tensor(targets_list, dtype=torch.float32, device=device)
+
+    return x, targets, edge_cor
+
+
+def _empty_predictions(stocks: list[str], date_str: str, source: str) -> pd.DataFrame:
+    """Return zero-prediction fallback DataFrame."""
+    return pd.DataFrame([
+        {"stock": s, "date": date_str, "predicted_return": 0.0, "signal_source": source}
+        for s in stocks
+    ])
+
+
+# ------------------------------------------------------------------
+# DualGAT Predictor
+# ------------------------------------------------------------------
+
+class DualGATPredictor:
+    """Training and prediction wrapper for DualGATModel.
+
+    Compatible with BaselinePredictor and MSLSTMPredictor interface.
+    Uses frozen MS-LSTM for feature extraction.
+    """
+
+    def __init__(
+        self,
+        in_dim: int = DUALGAT_IN_DIM,
+        hidden: int = DUALGAT_HIDDEN_DIM,
+        out_dim: int = DUALGAT_OUT_DIM,
+        heads: int = DUALGAT_GAT_HEADS,
+        dropout: float = DUALGAT_DROPOUT,
+        device: str | None = None,
+    ):
+        self.in_dim = in_dim
+        self.hidden = hidden
+        self.out_dim = out_dim
+        self.heads = heads
+        self.dropout = dropout
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.model = DualGATModel(
+            in_dim=in_dim,
+            hidden=hidden,
+            out_dim=out_dim,
+            heads=heads,
+            dropout=dropout,
+        ).to(self.device)
+
+        self._ind_builder = IndustryGraphBuilder()
+        self._corr_builder = CorrelationGraphBuilder()
+        self._edge_index_ind: torch.Tensor | None = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def fit(
+        self,
+        stocks: list[str],
+        start_date: str,
+        end_date: str,
+        ms_lstm_path: str,
+        epochs: int = DUALGAT_EPOCHS,
+        lr: float = DUALGAT_LEARNING_RATE,
+    ) -> dict:
+        """Train DualGAT on historical data.
+
+        Args:
+            stocks: List of ticker symbols.
+            start_date / end_date: Training date range (YYYY-MM-DD).
+            ms_lstm_path: Path to pre-trained MS-LSTM model.
+            epochs: Maximum training epochs.
+            lr: Learning rate.
+
+        Returns:
+            Dict with keys: train_loss, val_ic, best_epoch.
+        """
+        # Load frozen MS-LSTM
+        from src.model.ms_lstm import MSLSTMPredictor
+        ms_lstm = MSLSTMPredictor()
+        ms_lstm.load(ms_lstm_path)
+        ms_lstm.model.eval()
+
+        # Build static industry graph
+        from src.data.yfinance import YFinanceCollector
+        yf = YFinanceCollector()
+        fundamentals = yf.collect_fundamentals(stocks)
+        self._edge_index_ind = self._ind_builder.build(stocks, fundamentals).to(self.device)
+
+        # Get trading dates
+        trading_dates = _get_trading_dates(stocks, start_date, end_date)
+        if len(trading_dates) < 10:
+            logger.warning(f"Only {len(trading_dates)} trading dates, need >= 10")
+            return {"train_loss": [], "val_ic": [], "best_epoch": 0}
+
+        split = int(len(trading_dates) * 0.8)
+        train_dates = trading_dates[:split]
+        val_dates = trading_dates[split:]
+
+        optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=lr, weight_decay=DUALGAT_WEIGHT_DECAY
+        )
+
+        history = {"train_loss": [], "val_ic": []}
+        best_val_ic = -float("inf")
+        best_state = None
+        patience_counter = 0
+
+        for epoch in range(epochs):
+            # Training
+            self.model.train()
+            epoch_losses = []
+            for date_str in train_dates:
+                try:
+                    x, targets, edge_cor = _build_day_tensors_dualgat(
+                        stocks, date_str, ms_lstm, self._edge_index_ind, self._corr_builder, self.device
+                    )
+                except _DataError:
+                    continue
+
+                if x is None or len(targets) < 3:
+                    continue
+
+                optimizer.zero_grad()
+                predictions = self.model(x, self._edge_index_ind, edge_cor)
+                loss = _ic_loss(predictions, targets)
+                loss.backward()
+                optimizer.step()
+                epoch_losses.append(loss.item())
+
+            avg_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
+            history["train_loss"].append(avg_loss)
+
+            # Validation
+            val_ic = self._evaluate_ic(val_dates, stocks, ms_lstm)
+            history["val_ic"].append(val_ic)
+
+            logger.info(f"Epoch {epoch+1}/{epochs}: train_loss={avg_loss:.4f}, val_ic={val_ic:.4f}")
+
+            if val_ic > best_val_ic:
+                best_val_ic = val_ic
+                best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= DUALGAT_EARLY_STOP_PATIENCE:
+                    logger.info(f"Early stopping at epoch {epoch+1}")
+                    break
+
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+
+        history["best_epoch"] = int(np.argmax(history["val_ic"]) + 1) if history["val_ic"] else 0
+        return history
+
+    def predict(self, stocks: list[str], date_str: str) -> pd.DataFrame:
+        """Generate return predictions for all stocks on a given date."""
+        if not stocks:
+            return pd.DataFrame(columns=["stock", "date", "predicted_return", "signal_source"])
+
+        self.model.eval()
+
+        # Build correlation graph for this date
+        try:
+            from src.expert.tracker import ExpertTracker
+            tracker = ExpertTracker()
+            records = tracker.trace(date_str)
+            expert_stocks = set(r.stock for r in records if r.expert_type != "none")
+        except Exception:
+            expert_stocks = set()
+
+        edge_cor = self._corr_builder.build(stocks, date_str, expert_stocks).to(self.device)
+
+        # Build input features
+        try:
+            x, kept_stocks = _build_input_features(stocks, date_str, self.device)
+        except _DataError:
+            return _empty_predictions(stocks, date_str, "dualgat")
+
+        if self._edge_index_ind is None or self._edge_index_ind.shape[1] == 0:
+            return _empty_predictions(stocks, date_str, "dualgat")
+
+        with torch.no_grad():
+            preds = self.model(x, self._edge_index_ind, edge_cor).cpu().numpy()
+
+        df = pd.DataFrame({
+            "stock": kept_stocks,
+            "date": date_str,
+            "predicted_return": preds,
+            "signal_source": "dualgat",
+        })
+
+        std = df["predicted_return"].std()
+        if std > 0:
+            df["predicted_return"] = (df["predicted_return"] - df["predicted_return"].mean()) / std
+
+        return df.sort_values("predicted_return", ascending=False)
+
+    def save(self, path: str | Path) -> None:
+        """Save model state to disk."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "model_state_dict": self.model.state_dict(),
+                "in_dim": self.in_dim,
+                "hidden": self.hidden,
+                "out_dim": self.out_dim,
+                "heads": self.heads,
+                "dropout": self.dropout,
+                "edge_index_ind": self._edge_index_ind.cpu() if self._edge_index_ind is not None else None,
+            },
+            path,
+        )
+        logger.info(f"Model saved to {path}")
+
+    def load(self, path: str | Path) -> None:
+        """Load model state from disk."""
+        path = Path(path)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        self.in_dim = checkpoint["in_dim"]
+        self.hidden = checkpoint["hidden"]
+        self.out_dim = checkpoint["out_dim"]
+        self.heads = checkpoint["heads"]
+        self.dropout = checkpoint["dropout"]
+
+        self.model = DualGATModel(
+            in_dim=self.in_dim,
+            hidden=self.hidden,
+            out_dim=self.out_dim,
+            heads=self.heads,
+            dropout=self.dropout,
+        ).to(self.device)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.model.eval()
+
+        if checkpoint.get("edge_index_ind") is not None:
+            self._edge_index_ind = checkpoint["edge_index_ind"].to(self.device)
+
+        logger.info(f"Model loaded from {path}")
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _evaluate_ic(self, dates: list[str], stocks: list[str], ms_lstm) -> float:
+        """Compute mean IC over validation dates."""
+        self.model.eval()
+        ics = []
+        for date_str in dates:
+            try:
+                x, targets, edge_cor = _build_day_tensors_dualgat(
+                    stocks, date_str, ms_lstm, self._edge_index_ind, self._corr_builder, self.device
+                )
+            except _DataError:
+                continue
+
+            if x is None or len(targets) < 3:
+                continue
+
+            with torch.no_grad():
+                preds = self.model(x, self._edge_index_ind, edge_cor)
+                ic = 1.0 - _ic_loss(preds, targets).item()
+                ics.append(ic)
+
+        return float(np.mean(ics)) if ics else 0.0
