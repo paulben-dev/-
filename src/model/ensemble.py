@@ -141,6 +141,7 @@ class EnsemblePredictor:
             "ms_lstm_return": ms_vals,
             "dualgat_return": dg_vals,
         })
+        df = df.sort_values("predicted_return", ascending=False)
         return df
 
     def update_ic_history(self, model_id: str, ic: float) -> None:
@@ -365,6 +366,7 @@ class EnsemblePredictor:
     def load(self, path: str | Path) -> None:
         """Load ensemble state from disk."""
         path = Path(path)
+        self._meta = None
         # weights_only=False is required for dict checkpoints; safe for local trusted files
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.strategy = checkpoint.get("strategy", "weighted")

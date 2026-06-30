@@ -347,6 +347,7 @@ async function loadSystemStatus() {
 
         const predsResp = await fetch(`/api/predictions?date=${date}&model=${currentModel}`);
         const predsData = await predsResp.json();
+        if (!predsData.predictions) return;
         const expertPreds = predsData.predictions.filter(p => p.signal_source === 'expert').length;
 
         document.getElementById('sys-stocks').textContent = stocksData.count;

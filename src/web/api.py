@@ -100,7 +100,8 @@ def _get_model(model_id: str) -> object | None:
         logger.warning("Failed to load model '%s': %s", model_id, e)
         model = None
 
-    _model_cache[model_id] = model
+    if model is not None:
+        _model_cache[model_id] = model
     return model
 
 
@@ -512,13 +513,28 @@ async def trigger_collection_stream(
 
     loop = asyncio.get_event_loop()
 
+    def _do_collect_safe(start, end, stocks, callback):
+        """Wrapper that guarantees a final progress event."""
+        try:
+            _do_collect(start, end, stocks, callback)
+        except Exception as e:
+            callback({"step": "done", "msg": f"❌ 采集失败: {e}", "status": "error"})
+        finally:
+            # Ensure a terminal event is always emitted
+            try:
+                callback({"step": "done", "msg": "采集结束", "status": "done"})
+            except Exception:
+                pass
+
     async def generate():
         # Kick off collection in a background thread
         future = loop.run_in_executor(
-            _executor, _do_collect, start, end, DEFAULT_TICKERS, on_progress
+            _executor, _do_collect_safe, start, end, DEFAULT_TICKERS, on_progress
         )
 
         done = False
+        # Overall timeout to prevent hanging (10 minutes)
+        deadline = asyncio.get_event_loop().time() + 600
         while not done:
             try:
                 evt = q.get_nowait()
@@ -526,6 +542,9 @@ async def trigger_collection_stream(
                 if evt.get("step") == "done":
                     done = True
             except queue.Empty:
+                if asyncio.get_event_loop().time() > deadline:
+                    yield f"data: {json.dumps({'step': 'done', 'msg': '⏰ 采集超时', 'status': 'error'}, ensure_ascii=False)}\n\n"
+                    done = True
                 await asyncio.sleep(0.2)
 
         await future  # Ensure thread completes cleanly

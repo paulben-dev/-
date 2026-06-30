@@ -117,6 +117,11 @@ def main():
     if ensemble_m:
         results["ensemble_m"] = []
 
+    # Pre-fetch prices across full eval window with a small buffer
+    fetch_start = (datetime.fromisoformat(val_dates[0]) - timedelta(days=5)).strftime("%Y-%m-%d")
+    fetch_end = val_dates[-1]
+    all_prices = get_prices(stocks, fetch_start, fetch_end)
+
     for date_str in val_dates:
         records = tracker.trace(date_str)
 
@@ -125,10 +130,9 @@ def main():
         dg_df = dualgat.predict(stocks, date_str)
         ew_df = ensemble_w.predict(stocks, date_str, bl_df, ms_df, dg_df)
 
-        prices = get_prices(stocks, date_str, date_str)
         actuals = {}
         for stock in stocks:
-            sp = prices.get(stock, [])
+            sp = all_prices.get(stock, [])
             sp_sorted = sorted(sp, key=lambda x: x["date"])
             for i, p in enumerate(sp_sorted):
                 if p["date"] == date_str and i > 0:
