@@ -53,6 +53,24 @@
         .quick-dates button { font-size: 11px; padding: 4px 8px; background: #6c757d; }
         .summary-bar { display: flex; gap: 16px; margin-bottom: 12px; font-size: 13px; color: #555; }
         .summary-bar span { display: flex; align-items: center; gap: 4px; }
+        .model-tabs { display: flex; gap: 0; max-width: 1400px; margin: 0 auto 15px; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+        .model-tab { flex: 1; text-align: center; padding: 12px 8px; cursor: pointer; font-size: 13px; font-weight: 600; border: none; background: white; color: #888; transition: all 0.2s; border-bottom: 3px solid transparent; }
+        .model-tab:hover { background: #f8f9ff; color: #333; }
+        .model-tab.active { color: #16213e; border-bottom-color: #16213e; background: #f0f2ff; }
+        .model-tab.unavailable { color: #ccc; cursor: not-allowed; opacity: 0.5; }
+        .model-tab .tab-ic { display: block; font-size: 10px; font-weight: 400; color: #28a745; margin-top: 2px; }
+        .model-tab.unavailable .tab-ic { color: #ccc; }
+        .compare-toggle { display: flex; align-items: center; padding: 0 16px; font-size: 11px; color: #888; cursor: pointer; white-space: nowrap; }
+        .compare-toggle input { margin-right: 4px; }
+        .compare-table { width: 100%; font-size: 12px; margin-top: 10px; }
+        .compare-table .best { background: #d4edda; font-weight: 700; }
+        .model-status { display: flex; gap: 8px; flex-wrap: wrap; max-width: 1400px; margin: 0 auto 15px; }
+        .model-status .chip { font-size: 11px; padding: 3px 10px; border-radius: 12px; background: #e8e8e8; color: #888; }
+        .model-status .chip.available { background: #d4edda; color: #155724; }
+        .predictions-compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+        .predictions-compare .mini-card { background: #f8f9fa; border-radius: 8px; padding: 12px; }
+        .predictions-compare .mini-card h4 { font-size: 12px; color: #666; margin-bottom: 8px; }
+        .predictions-compare table { font-size: 11px; }
     </style>
 </head>
 <body>
@@ -64,6 +82,24 @@
     <div class="header">
         <h1>DualGAT Stock Predictor</h1>
         <p>Expert Opinion-Driven Stock Return Prediction — MVP v0.1</p>
+    </div>
+
+    <div class="model-tabs" id="model-tabs">
+        <button class="model-tab active" data-model="baseline" onclick="selectModel('baseline')">
+            Baseline<span class="tab-ic"></span>
+        </button>
+        <button class="model-tab" data-model="ms_lstm" onclick="selectModel('ms_lstm')">
+            MS-LSTM<span class="tab-ic"></span>
+        </button>
+        <button class="model-tab" data-model="dualgat" onclick="selectModel('dualgat')">
+            DualGAT<span class="tab-ic"></span>
+        </button>
+        <button class="model-tab" data-model="ensemble" onclick="selectModel('ensemble')">
+            Ensemble<span class="tab-ic"></span>
+        </button>
+        <label class="compare-toggle">
+            <input type="checkbox" id="compare-mode" onchange="toggleCompare()"> Compare All
+        </label>
     </div>
 
     <div class="controls" style="max-width:1400px; margin: 0 auto 15px;">
@@ -88,6 +124,7 @@
             <h2>Return Predictions <span id="pred-date" style="font-weight:400;color:#888;"></span></h2>
             <div class="summary-bar" id="pred-summary"></div>
             <div id="predictions-table"><div class="loading">Loading predictions</div></div>
+            <div id="predictions-compare" class="predictions-compare" style="display:none;"></div>
         </div>
 
         <!-- Experts Panel -->
@@ -108,6 +145,7 @@
             </div>
             <div id="chart-container"><canvas id="returnsChart"></canvas></div>
             <div id="chart-legend" style="text-align:center;margin-top:8px;font-size:12px;color:#888;"></div>
+            <div id="compare-table-container" style="margin-top:12px;"></div>
         </div>
 
         <!-- System Status Panel -->

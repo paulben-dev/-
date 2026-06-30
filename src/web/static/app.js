@@ -1,15 +1,70 @@
-// DualGAT Stock Predictor — frontend logic
+// DualGAT Stock Predictor — frontend logic (v0.4 model switching)
 let returnsChart = null;
+let currentModel = 'baseline';
+let compareMode = false;
+
+const MODEL_COLORS = {
+    baseline: '#6c757d',
+    ms_lstm:  '#0d6efd',
+    dualgat:  '#fd7e14',
+    ensemble: '#198754',
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     document.getElementById('date-picker').value = yesterday.toISOString().split('T')[0];
+    loadModels();
     loadPredictions();
     loadExperts();
     loadBacktest();
     loadSystemStatus();
 });
+
+// ── Model management ──
+
+async function loadModels() {
+    try {
+        const resp = await fetch('/api/models');
+        const data = await resp.json();
+        window._models = data.models;
+        updateModelTabs(data.models);
+    } catch (e) {
+        console.error('Failed to load models:', e);
+    }
+}
+
+function updateModelTabs(models) {
+    for (const m of models) {
+        const tab = document.querySelector(`.model-tab[data-model="${m.id}"]`);
+        if (!tab) continue;
+        if (!m.available) {
+            tab.classList.add('unavailable');
+            tab.title = 'Model file not found';
+        } else {
+            tab.classList.remove('unavailable');
+        }
+    }
+}
+
+function selectModel(modelId) {
+    const models = window._models || [];
+    const m = models.find(x => x.id === modelId);
+    if (m && !m.available) return;
+
+    currentModel = modelId;
+    document.querySelectorAll('.model-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector(`.model-tab[data-model="${modelId}"]`)?.classList.add('active');
+    loadPredictions();
+    loadBacktest();
+}
+
+function toggleCompare() {
+    compareMode = document.getElementById('compare-mode').checked;
+    loadPredictions();
+}
+
+// ── Utility ──
 
 function setDate(offset) {
     const d = new Date();
@@ -30,19 +85,29 @@ function setStatus(msg) {
 function fmtPct(v) { return (v * 100).toFixed(2) + '%'; }
 function fmtPct1(v) { return (v * 100).toFixed(1) + '%'; }
 
+// ── Predictions (updated for model switching) ──
+
 async function loadPredictions() {
     const date = getDate();
-    setStatus('Loading predictions...');
-    document.getElementById('pred-date').textContent = date;
+    setStatus(`Loading predictions (${currentModel})...`);
+
+    if (compareMode) {
+        await loadPredictionsCompare(date);
+        return;
+    }
+
+    document.getElementById('predictions-compare').style.display = 'none';
+    document.getElementById('predictions-table').style.display = '';
+
     try {
-        const resp = await fetch(`/api/predictions?date=${date}`);
+        const resp = await fetch(`/api/predictions?date=${date}&model=${currentModel}`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
 
         const experts = data.predictions.filter(p => p.signal_source === 'expert').length;
         const momentum = data.predictions.length - experts;
         document.getElementById('pred-date').textContent =
-            `${date} (experts: ${experts} | momentum: ${momentum})`;
+            `${date} [${currentModel}] (experts: ${experts} | momentum: ${momentum})`;
 
         if (!data.predictions || data.predictions.length === 0) {
             document.getElementById('predictions-table').innerHTML =
@@ -54,15 +119,17 @@ async function loadPredictions() {
         document.getElementById('pred-summary').innerHTML =
             `<span>🟢 Expert signals: <strong>${experts}</strong> stocks</span>` +
             `<span>⚪ Momentum signals: <strong>${momentum}</strong> stocks</span>` +
-            `<span>📊 Coverage: <strong>${data.expert_coverage}</strong></span>`;
+            `<span>📊 Coverage: <strong>${data.expert_coverage || '—'}</strong></span>`;
 
         const cols = [
             { key: 'stock', label: 'Stock' },
             { key: 'predicted_return', label: 'Predicted Return', fmt: v => `<span class="${v > 0 ? 'green' : 'red'}">${fmtPct(v)}</span>` },
             { key: 'signal_source', label: 'Source', fmt: v => {
                 if (v === 'expert') return '<span class="badge badge-expert-signal">🧠 Expert</span>';
-                if (v === 'momentum') return '<span class="badge badge-momentum">📐 Momentum</span>';
-                return v;
+                if (v === 'ensemble') return '<span class="badge badge-expert-signal">🔗 Ensemble</span>';
+                if (v === 'ms_lstm') return '<span class="badge badge-expert-signal">🔮 MS-LSTM</span>';
+                if (v === 'dualgat') return '<span class="badge badge-expert-signal">🕸️ DualGAT</span>';
+                return '<span class="badge badge-momentum">📐 Momentum</span>';
             }},
         ];
         document.getElementById('predictions-table').innerHTML = buildTable(data.predictions, cols, 20);
@@ -73,6 +140,40 @@ async function loadPredictions() {
         setStatus('Error loading predictions');
     }
 }
+
+async function loadPredictionsCompare(date) {
+    document.getElementById('predictions-table').style.display = 'none';
+    const container = document.getElementById('predictions-compare');
+    container.style.display = 'grid';
+    container.innerHTML = '<div class="loading">Loading all models...</div>';
+
+    const modelIds = ['baseline', 'ms_lstm', 'dualgat', 'ensemble'];
+    const names = { baseline: 'Baseline', ms_lstm: 'MS-LSTM', dualgat: 'DualGAT', ensemble: 'Ensemble' };
+
+    let html = '';
+    for (const mid of modelIds) {
+        try {
+            const resp = await fetch(`/api/predictions?date=${date}&model=${mid}`);
+            if (!resp.ok) {
+                html += `<div class="mini-card"><h4 style="color:${MODEL_COLORS[mid]};">${names[mid]}</h4><div class="empty-state" style="padding:10px;">⚠️ Unavailable</div></div>`;
+                continue;
+            }
+            const data = await resp.json();
+            const rows = data.predictions.slice(0, 10);
+            let table = '<table><thead><tr><th>Stock</th><th>Return</th></tr></thead><tbody>';
+            for (const p of rows) {
+                table += `<tr><td><strong>${p.stock}</strong></td><td class="${p.predicted_return > 0 ? 'green' : 'red'}">${fmtPct(p.predicted_return)}</td></tr>`;
+            }
+            table += '</tbody></table>';
+            html += `<div class="mini-card"><h4 style="color:${MODEL_COLORS[mid]};">${names[mid]}</h4>${table}</div>`;
+        } catch (e) {
+            html += `<div class="mini-card"><h4 style="color:${MODEL_COLORS[mid]};">${names[mid]}</h4><div class="empty-state">Error</div></div>`;
+        }
+    }
+    container.innerHTML = html;
+}
+
+// ── Experts ──
 
 async function loadExperts() {
     const date = getDate();
@@ -119,6 +220,8 @@ async function loadExperts() {
     }
 }
 
+// ── Backtest (updated — multi-line chart + comparison table) ──
+
 async function loadBacktest() {
     const endDate = getDate();
     const startDate = new Date(endDate);
@@ -126,77 +229,111 @@ async function loadBacktest() {
     const start = startDate.toISOString().split('T')[0];
 
     try {
-        const resp = await fetch(`/api/backtest?start=${start}&end=${endDate}`);
+        const resp = await fetch(`/api/backtest/compare?start=${start}&end=${endDate}`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
 
-        const arClass = data.annualized_return > 0 ? 'green' : 'red';
-        document.querySelector('#metrics-summary').innerHTML = `
-            <div class="metric"><div class="value ${arClass}">${fmtPct1(data.annualized_return)}</div><div class="label">Annualized Return</div></div>
-            <div class="metric"><div class="value">${data.sharpe_ratio.toFixed(2)}</div><div class="label">Sharpe Ratio</div></div>
-            <div class="metric"><div class="value">${fmtPct(data.mean_ic)}</div><div class="label">Mean IC</div></div>
-            <div class="metric"><div class="value red">${fmtPct1(data.max_drawdown)}</div><div class="label">Max Drawdown</div></div>
-        `;
-
-        const cumReturns = data.cumulative_returns || [];
-        if (cumReturns.length === 0) {
+        const modelIds = Object.keys(data.models);
+        if (modelIds.length === 0) {
             document.getElementById('chart-container').innerHTML =
                 '<div class="empty-state"><div class="icon">📉</div>No backtest data available</div>';
             return;
         }
 
+        // Show current model's metrics in the summary bar
+        const cur = data.models[currentModel] || data.models[modelIds[0]];
+        const arClass = cur.annualized_return > 0 ? 'green' : 'red';
+        document.querySelector('#metrics-summary').innerHTML = `
+            <div class="metric"><div class="value ${arClass}">${fmtPct1(cur.annualized_return)}</div><div class="label">Annualized Return</div></div>
+            <div class="metric"><div class="value">${cur.sharpe_ratio.toFixed(2)}</div><div class="label">Sharpe Ratio</div></div>
+            <div class="metric"><div class="value">${fmtPct(cur.mean_ic)}</div><div class="label">Mean IC</div></div>
+            <div class="metric"><div class="value red">${fmtPct1(cur.max_drawdown)}</div><div class="label">Max Drawdown</div></div>
+        `;
+
+        // Multi-line chart
         if (returnsChart) returnsChart.destroy();
         const ctx = document.getElementById('returnsChart').getContext('2d');
-        const labels = cumReturns.map((_, i) => i + 1);
-        const finalVal = cumReturns[cumReturns.length - 1];
-        const lineColor = finalVal >= 1 ? '#28a745' : '#dc3545';
+        const maxLen = Math.max(...modelIds.map(id => (data.models[id].cumulative_returns || []).length));
+
+        const datasets = modelIds.map(id => {
+            const cr = data.models[id].cumulative_returns || [];
+            return {
+                label: id.charAt(0).toUpperCase() + id.slice(1),
+                data: cr,
+                borderColor: MODEL_COLORS[id] || '#999',
+                backgroundColor: 'transparent',
+                tension: 0.3,
+                pointRadius: 0,
+                borderWidth: id === currentModel ? 3 : 1.5,
+            };
+        });
 
         returnsChart = new Chart(ctx, {
             type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Cumulative Return',
-                    data: cumReturns,
-                    borderColor: lineColor,
-                    backgroundColor: finalVal >= 1 ? 'rgba(40,167,69,0.08)' : 'rgba(220,53,69,0.08)',
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 0,
-                    borderWidth: 2,
-                }]
-            },
+            data: { labels: Array.from({length: maxLen}, (_, i) => i + 1), datasets },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 interaction: { intersect: false, mode: 'index' },
                 plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: ctx => `Cumulative: ${(ctx.parsed.y * 100).toFixed(2)}%`,
-                            title: ctx => `Day #${ctx[0].label}`,
-                        }
-                    }
+                    legend: { display: true, position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } },
                 },
                 scales: {
                     x: { display: true, title: { display: true, text: 'Trading Day', color: '#888' }, ticks: { maxTicksLimit: 15, color: '#aaa' }, grid: { display: false } },
-                    y: {
-                        ticks: { callback: v => (v * 100).toFixed(0) + '%', color: '#aaa' },
-                        grid: { color: '#f0f0f0' },
-                    }
+                    y: { ticks: { callback: v => (v * 100).toFixed(0) + '%', color: '#aaa' }, grid: { color: '#f0f0f0' } },
                 }
             }
         });
 
+        // Comparison table
+        const names = { baseline: 'Baseline', ms_lstm: 'MS-LSTM', dualgat: 'DualGAT', ensemble: 'Ensemble' };
+        const metrics = ['annualized_return', 'sharpe_ratio', 'mean_ic', 'max_drawdown', 'icir'];
+        const labels = ['Ann. Return', 'Sharpe', 'Mean IC', 'Max DD', 'ICIR'];
+        const fmt = [
+            v => fmtPct1(v),
+            v => v.toFixed(2),
+            v => fmtPct(v),
+            v => fmtPct1(v),
+            v => v.toFixed(2),
+        ];
+        const higherBetter = [true, true, true, false, true];
+
+        // Find best values
+        const best = {};
+        for (let i = 0; i < metrics.length; i++) {
+            const vals = modelIds.map(id => data.models[id][metrics[i]]).filter(v => v != null);
+            if (vals.length > 0) {
+                best[metrics[i]] = higherBetter[i] ? Math.max(...vals) : Math.min(...vals);
+            }
+        }
+
+        let tbl = '<table class="compare-table"><thead><tr><th>Model</th>';
+        for (const l of labels) tbl += `<th>${l}</th>`;
+        tbl += '</tr></thead><tbody>';
+        for (const id of modelIds) {
+            const m = data.models[id];
+            tbl += `<tr><td><strong>${names[id] || id}</strong></td>`;
+            for (let i = 0; i < metrics.length; i++) {
+                const val = m[metrics[i]];
+                const isBest = best[metrics[i]] !== undefined && val === best[metrics[i]];
+                tbl += `<td class="${isBest ? 'best' : ''}">${val != null ? fmt[i](val) : '—'}</td>`;
+            }
+            tbl += '</tr>';
+        }
+        tbl += '</tbody></table>';
+        document.getElementById('compare-table-container').innerHTML = tbl;
+
+        const totalDays = modelIds.reduce((max, id) => Math.max(max, data.models[id].n_trading_days || 0), 0);
         document.getElementById('chart-legend').textContent =
-            `${data.n_trading_days} trading days · ${start} ~ ${endDate} · ICIR: ${data.icir.toFixed(2)}`;
+            `${totalDays} trading days · ${start} ~ ${endDate}`;
     } catch (e) {
         console.error('Backtest load error:', e);
         document.getElementById('chart-container').innerHTML =
             `<div class="empty-state"><div class="icon">⚠️</div>Backtest load failed: ${e.message}</div>`;
     }
 }
+
+// ── System Status ──
 
 async function loadSystemStatus() {
     try {
@@ -207,7 +344,7 @@ async function loadSystemStatus() {
         const expertsResp = await fetch(`/api/experts?date=${date}`);
         const expertsData = await expertsResp.json();
 
-        const predsResp = await fetch(`/api/predictions?date=${date}`);
+        const predsResp = await fetch(`/api/predictions?date=${date}&model=${currentModel}`);
         const predsData = await predsResp.json();
         const expertPreds = predsData.predictions.filter(p => p.signal_source === 'expert').length;
 
@@ -219,6 +356,8 @@ async function loadSystemStatus() {
         // System status is non-critical
     }
 }
+
+// ── Data Collection ──
 
 async function triggerCollect() {
     setStatus('Collecting data...');
@@ -250,6 +389,7 @@ async function triggerCollect() {
 }
 
 // ── Table builder utility ──
+
 function buildTable(rows, cols, maxRows) {
     let html = '<table><thead><tr>';
     for (const c of cols) html += `<th>${c.label}</th>`;
