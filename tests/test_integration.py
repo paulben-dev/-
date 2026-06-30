@@ -1,5 +1,6 @@
 """End-to-end integration test for the full pipeline."""
 import pytest
+import numpy as np
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
@@ -101,3 +102,45 @@ def test_baseline_predictor_all_stocks_covered():
     df = predictor.predict(stocks, "2024-06-01")
     assert len(df) == len(stocks)
     assert df["predicted_return"].notna().all()
+
+
+class TestWalkForwardIntegration:
+    """Integration smoke test for walk-forward + scanner pipeline."""
+
+    def test_walkforward_scan_pipeline(self, prepopulated_db, tmp_path):
+        """Walk-forward → scan pipeline runs end-to-end without errors."""
+        import torch
+        torch.manual_seed(42)
+        np.random.seed(42)
+
+        from src.backtest.walkforward import (
+            WalkForwardConfig, run_walk_forward,
+        )
+        from src.backtest.scanner import (
+            ParamSpec, build_param_grid, run_scan,
+        )
+
+        stocks = ["AAPL", "MSFT"]
+
+        # Walk-forward in params mode.
+        # May 1 – Jun 30 has 41 NYSE trading days, which is enough for
+        # train_days=30 + validate_days=5 (the first window needs 35 days).
+        wf_cfg = WalkForwardConfig(
+            train_days=30,
+            validate_days=5,
+            step_days=5,
+            mode="params",
+            min_train_days=5,
+        )
+        wf_result = run_walk_forward(stocks, "2024-05-01", "2024-06-30", wf_cfg)
+        assert len(wf_result.windows) > 0
+        assert "sharpe_mean" in wf_result.summary
+
+        # Parameter scan (hold-out mode, wf_config=None)
+        specs = [ParamSpec("quantile", [0.10, 0.20])]
+        grid = build_param_grid(specs)
+        scan_df = run_scan(stocks, "2024-05-01", "2024-06-30", grid,
+                           wf_config=None, metric="sharpe_ratio")
+        assert len(scan_df) == 2
+        # Results are sorted by metric descending
+        assert scan_df["sharpe_ratio"].iloc[0] >= scan_df["sharpe_ratio"].iloc[1]
