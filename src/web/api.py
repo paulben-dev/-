@@ -21,7 +21,11 @@ from src.data.yfinance import YFinanceCollector
 from src.data.stocktwits import StockTwitsCollector
 from src.data.reddit import RedditCollector
 from src.db import schema as db
-from config import DEFAULT_TICKERS, PORTFOLIO_QUANTILE, API_HOST, API_PORT
+from config import (
+    DEFAULT_TICKERS, PORTFOLIO_QUANTILE, API_HOST, API_PORT,
+    MSLSTM_MODEL_PATH, DUALGAT_MODEL_PATH,
+    ENSEMBLE_MODEL_PATH, ENSEMBLE_META_PATH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,82 @@ def get_predictor() -> BaselinePredictor:
     if _predictor is None:
         _predictor = BaselinePredictor()
     return _predictor
+
+
+# Model cache (lazy init, loaded once per process lifetime)
+_model_cache: dict[str, object] = {}
+
+
+def _get_model(model_id: str) -> object | None:
+    """Load and cache a prediction model by ID.
+
+    Returns ``None`` when the model cannot be loaded (missing file, etc.).
+    """
+    global _model_cache
+    if model_id in _model_cache:
+        return _model_cache[model_id]
+
+    model = None
+    try:
+        if model_id == "baseline":
+            model = BaselinePredictor()
+        elif model_id == "ms_lstm":
+            if MSLSTM_MODEL_PATH.exists():
+                from src.model.ms_lstm import MSLSTMPredictor
+                model = MSLSTMPredictor()
+                model.load(MSLSTM_MODEL_PATH)
+        elif model_id == "dualgat":
+            if DUALGAT_MODEL_PATH.exists():
+                from src.model.dualgat import DualGATPredictor
+                model = DualGATPredictor()
+                model.load(DUALGAT_MODEL_PATH)
+        elif model_id == "ensemble":
+            from src.model.ensemble import EnsemblePredictor
+            ensemble = EnsemblePredictor(strategy="weighted")
+            if ENSEMBLE_MODEL_PATH.exists():
+                ensemble.load(ENSEMBLE_MODEL_PATH)
+            model = ensemble
+    except Exception as e:
+        logger.warning("Failed to load model '%s': %s", model_id, e)
+        model = None
+
+    _model_cache[model_id] = model
+    return model
+
+
+def _get_available_models() -> list[dict]:
+    """Return metadata for all models, including availability."""
+    ms_available = MSLSTM_MODEL_PATH.exists()
+    dg_available = DUALGAT_MODEL_PATH.exists()
+    all_three = ms_available and dg_available  # baseline always available
+    ens_meta_available = ENSEMBLE_META_PATH.exists()
+
+    return [
+        {
+            "id": "baseline",
+            "name": "Baseline",
+            "available": True,
+            "needs_training": False,
+        },
+        {
+            "id": "ms_lstm",
+            "name": "MS-LSTM",
+            "available": ms_available,
+            "needs_model": str(MSLSTM_MODEL_PATH) if not ms_available else None,
+        },
+        {
+            "id": "dualgat",
+            "name": "DualGAT",
+            "available": dg_available,
+            "needs_model": str(DUALGAT_MODEL_PATH) if not dg_available else None,
+        },
+        {
+            "id": "ensemble",
+            "name": "Ensemble",
+            "available": all_three,
+            "strategy": "weighted" if not ens_meta_available else "meta",
+        },
+    ]
 
 
 @app.on_event("startup")
@@ -100,22 +180,74 @@ async def get_experts(date: str = Query(None, description="Date in YYYY-MM-DD fo
     }
 
 
+@app.get("/api/models")
+async def list_models():
+    """Return all prediction models and their availability."""
+    return {"models": _get_available_models()}
+
+
 @app.get("/api/predictions")
-async def get_predictions(date: str = Query(None, description="Date in YYYY-MM-DD format")):
-    """Get stock return predictions for a given date."""
+async def get_predictions(
+    date: str = Query(None, description="Date in YYYY-MM-DD format"),
+    model: str = Query("baseline", description="Model ID: baseline|ms_lstm|dualgat|ensemble"),
+):
+    """Get stock return predictions for a given date and model.
+
+    Defaults to ``model=baseline`` for backward compatibility.
+    """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    tracker = get_tracker()
-    predictor = get_predictor()
+    valid_models = {"baseline", "ms_lstm", "dualgat", "ensemble"}
+    if model not in valid_models:
+        raise HTTPException(
+            400,
+            f"Unknown model '{model}'. Valid: {', '.join(sorted(valid_models))}",
+        )
 
+    tracker = get_tracker()
     expert_records = tracker.trace(date)
-    pred_df = predictor.predict(DEFAULT_TICKERS, date, expert_records)
+
+    available = {m["id"]: m["available"] for m in _get_available_models()}
+    if not available.get(model, False):
+        raise HTTPException(
+            503,
+            f"Model '{model}' is not available (missing model file)",
+        )
+
+    # Generate predictions
+    pred_model = _get_model(model)
+    if pred_model is None:
+        raise HTTPException(503, f"Model '{model}' failed to load")
+
+    if model == "baseline":
+        pred_df = pred_model.predict(DEFAULT_TICKERS, date, expert_records)
+    elif model == "ms_lstm":
+        pred_df = pred_model.predict(DEFAULT_TICKERS, date)
+    elif model == "dualgat":
+        pred_df = pred_model.predict(DEFAULT_TICKERS, date)
+    elif model == "ensemble":
+        bl = _get_model("baseline")
+        ms = _get_model("ms_lstm")
+        dg = _get_model("dualgat")
+        if bl is None or ms is None or dg is None:
+            raise HTTPException(
+                503, "Ensemble requires all sub-models to be available"
+            )
+        bl_df = bl.predict(DEFAULT_TICKERS, date, expert_records)
+        ms_df = ms.predict(DEFAULT_TICKERS, date)
+        dg_df = dg.predict(DEFAULT_TICKERS, date)
+        pred_df = pred_model.predict(DEFAULT_TICKERS, date, bl_df, ms_df, dg_df)
+    else:
+        raise HTTPException(500, f"Unhandled model '{model}'")  # pragma: no cover
+
+    expert_coverage = len([r for r in expert_records if r.expert_type != "none"])
 
     return {
         "date": date,
+        "model": model,
         "predictions": pred_df.to_dict(orient="records"),
-        "expert_coverage": len([r for r in expert_records if r.expert_type != "none"]),
+        "expert_coverage": expert_coverage,
     }
 
 
@@ -168,6 +300,103 @@ async def get_backtest(
         "n_trading_days": results["n_trading_days"],
         "cumulative_returns": results["cumulative_returns"].tolist(),
     }
+
+
+@app.get("/api/backtest/compare")
+async def compare_backtest(
+    start: str = Query(None, description="Start date YYYY-MM-DD"),
+    end: str = Query(None, description="End date YYYY-MM-DD"),
+):
+    """Run backtest for all available models and return comparison.
+
+    Models that fail to load or compute are silently skipped;
+    a 404 is only raised when *no* model produced results.
+    """
+    if start is None:
+        start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    if end is None:
+        end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    available_models = _get_available_models()
+    available_ids = [m["id"] for m in available_models if m["available"]]
+    if not available_ids:
+        raise HTTPException(404, "No models available for backtest")
+
+    tracker = get_tracker()
+
+    # Collect all trading dates from price data
+    from src.db import schema as db_schema
+    all_prices = db_schema.get_prices(DEFAULT_TICKERS, start, end)
+    trading_dates = set()
+    for stock_prices in all_prices.values():
+        for p in stock_prices:
+            trading_dates.add(p["date"])
+    trading_dates = sorted([d for d in trading_dates if start <= d <= end])
+
+    if len(trading_dates) < 3:
+        raise HTTPException(404, "Insufficient trading data for the date range")
+
+    results: dict[str, dict] = {}
+    for model_id in available_ids:
+        try:
+            pred_model = _get_model(model_id)
+            if pred_model is None:
+                logger.warning(
+                    "Backtest compare: model '%s' not loaded, skipping", model_id
+                )
+                continue
+
+            all_preds = []
+            for date_str in trading_dates:
+                expert_records = tracker.trace(date_str)
+                if model_id == "baseline":
+                    pdf = pred_model.predict(
+                        DEFAULT_TICKERS, date_str, expert_records
+                    )
+                elif model_id == "ms_lstm":
+                    pdf = pred_model.predict(DEFAULT_TICKERS, date_str)
+                elif model_id == "dualgat":
+                    pdf = pred_model.predict(DEFAULT_TICKERS, date_str)
+                elif model_id == "ensemble":
+                    bl = _get_model("baseline")
+                    ms = _get_model("ms_lstm")
+                    dg = _get_model("dualgat")
+                    if bl is None or ms is None or dg is None:
+                        continue
+                    bl_df = bl.predict(DEFAULT_TICKERS, date_str, expert_records)
+                    ms_df = ms.predict(DEFAULT_TICKERS, date_str)
+                    dg_df = dg.predict(DEFAULT_TICKERS, date_str)
+                    pdf = pred_model.predict(
+                        DEFAULT_TICKERS, date_str, bl_df, ms_df, dg_df
+                    )
+                else:
+                    continue  # unknown model – skip silently
+                all_preds.append(pdf)
+
+            if not all_preds:
+                logger.warning(
+                    "Backtest compare: no predictions for '%s', skipping", model_id
+                )
+                continue
+
+            combined = pd.concat(all_preds, ignore_index=True)
+            bt_result = run_backtest(combined, DEFAULT_TICKERS, start, end)
+            results[model_id] = {
+                "annualized_return": bt_result["annualized_return"],
+                "sharpe_ratio": bt_result["sharpe_ratio"],
+                "max_drawdown": bt_result["max_drawdown"],
+                "mean_ic": bt_result["mean_ic"],
+                "icir": bt_result["icir"],
+                "n_trading_days": bt_result["n_trading_days"],
+                "cumulative_returns": bt_result["cumulative_returns"].tolist(),
+            }
+        except Exception as e:
+            logger.warning("Backtest compare failed for '%s': %s", model_id, e)
+
+    if not results:
+        raise HTTPException(404, "No backtest results could be computed")
+
+    return {"start": start, "end": end, "models": results}
 
 
 def _do_collect(
