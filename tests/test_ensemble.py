@@ -207,3 +207,84 @@ class TestEnsembleMeta:
         df1 = meta_ensemble.predict(["A"], "2024-06-15", bl, ms, dg)
         df2 = loaded.predict(["A"], "2024-06-15", bl, ms, dg)
         assert np.allclose(df1["predicted_return"].values, df2["predicted_return"].values)
+
+
+class TestEnsembleIntegration:
+    """End-to-end integration tests for ensemble pipeline."""
+
+    def test_full_pipeline_smoke(self, prepopulated_db, tmp_path):
+        """Weighted ensemble works end-to-end with sub-models."""
+        import torch
+        torch.manual_seed(99)
+        np.random.seed(99)
+
+        stocks = ["AAPL", "MSFT"]
+        from src.model.baseline import BaselinePredictor
+        from src.model.ms_lstm import MSLSTMPredictor
+        from src.model.dualgat import DualGATPredictor
+        from src.model.ensemble import EnsemblePredictor
+
+        baseline = BaselinePredictor()
+
+        ms_path = tmp_path / "ms_int.pt"
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+        ms.save(ms_path)
+        ms.load(ms_path)
+
+        dg = DualGATPredictor(hidden=16, out_dim=8, heads=2)
+
+        ensemble = EnsemblePredictor(strategy="weighted")
+        ensemble.model_ic_history = {
+            "baseline": [0.04] * 20, "ms_lstm": [0.05] * 20, "dualgat": [0.06] * 20,
+        }
+
+        bl_df = baseline.predict(stocks, "2024-06-15", [])
+        ms_df = ms.predict(stocks, "2024-06-15")
+        dg_df = dg.predict(stocks, "2024-06-15")
+
+        df = ensemble.predict(stocks, "2024-06-15", bl_df, ms_df, dg_df)
+        assert len(df) == 2
+        assert df["signal_source"].iloc[0] == "ensemble"
+        assert "baseline_return" in df.columns
+
+        # Save/load
+        path = tmp_path / "ensemble_int.pt"
+        ensemble.save(path)
+        loaded = EnsemblePredictor()
+        loaded.load(path)
+        df2 = loaded.predict(stocks, "2024-06-15", bl_df, ms_df, dg_df)
+        assert np.allclose(df["predicted_return"].values, df2["predicted_return"].values)
+
+    def test_meta_fit_smoke(self, prepopulated_db, tmp_path):
+        """Meta-learner fit completes one epoch without error."""
+        import torch
+        torch.manual_seed(42)
+        np.random.seed(42)
+
+        stocks = ["AAPL", "MSFT"]
+        from src.model.baseline import BaselinePredictor
+        from src.model.ms_lstm import MSLSTMPredictor
+        from src.model.dualgat import DualGATPredictor
+        from src.model.ensemble import EnsemblePredictor
+
+        baseline = BaselinePredictor()
+
+        ms_path = tmp_path / "ms_meta_fit.pt"
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+        ms.save(ms_path)
+
+        dg = DualGATPredictor(hidden=16, out_dim=8, heads=2)
+
+        meta = EnsemblePredictor(strategy="meta")
+        history = meta.fit_meta(
+            stocks=stocks,
+            start_date="2024-05-20",
+            end_date="2024-06-15",
+            baseline=baseline,
+            ms_lstm=ms,
+            dualgat=dg,
+            epochs=1,
+            lr=1e-3,
+        )
+        assert len(history["train_loss"]) == 1
+        assert np.isfinite(history["train_loss"][0])
