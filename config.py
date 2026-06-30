@@ -94,3 +94,14 @@ POSITION_TARGET_VOL = 0.15         # Annualized volatility target (0=disabled)
 POSITION_MAX_SINGLE = 0.05         # Max absolute weight per stock (0=disabled)
 POSITION_SECTOR_NEUTRAL = False    # Equal long/short exposure per GICS sector
 POSITION_MAX_TURNOVER = 1.0        # Max daily turnover fraction (0=disabled)
+
+# Parameter Scanner (v0.5)
+SCAN_DEFAULT_METRIC = "sharpe_ratio"
+SCAN_RANDOM_N_ITER = 50
+
+# Walk-Forward (v0.5)
+WF_TRAIN_DAYS = 252
+WF_VALIDATE_DAYS = 63
+WF_STEP_DAYS = 21
+WF_MODE = "full"                   # "full" or "params"
+WF_MIN_TRAIN_DAYS = 60
