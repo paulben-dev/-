@@ -171,6 +171,7 @@ class EnsemblePredictor:
     def load(self, path: str | Path) -> None:
         """Load ensemble state from disk."""
         path = Path(path)
+        # weights_only=False is required for dict checkpoints; safe for local trusted files
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.strategy = checkpoint.get("strategy", "weighted")
         self.temperature = checkpoint.get("temperature", ENSEMBLE_TEMPERATURE)
@@ -220,7 +221,7 @@ class EnsemblePredictor:
     ) -> np.ndarray:
         """Meta-learner MLP fusion."""
         if self._meta is None:
-            # Fall back to weighted average
+            logger.warning("Meta-learner not loaded, falling back to weighted average")
             return self._fuse_weighted(bl, ms, dg)
         self._meta.eval()
         x = np.stack([bl, ms, dg], axis=1)  # [N, 3]
