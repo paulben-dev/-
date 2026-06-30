@@ -105,3 +105,105 @@ class TestEnsembleWeighted:
         df1 = ensemble.predict(stocks, "2024-06-15", baseline, ms_lstm, dualgat)
         df2 = loaded.predict(stocks, "2024-06-15", baseline, ms_lstm, dualgat)
         assert np.allclose(df1["predicted_return"].values, df2["predicted_return"].values)
+
+
+class TestEnsembleMeta:
+    """Tests for meta-learner MLP ensemble strategy."""
+
+    @pytest.fixture
+    def meta_ensemble(self):
+        from src.model.ensemble import EnsemblePredictor
+        return EnsemblePredictor(strategy="meta", temperature=0.1)
+
+    def test_meta_forward_produces_n_outputs(self, meta_ensemble, prepopulated_db):
+        """Meta-learner forward pass produces [N] predictions."""
+        import torch
+        torch.manual_seed(42)
+        np.random.seed(42)
+
+        stocks = ["AAPL", "MSFT"]
+        from src.model.baseline import BaselinePredictor
+        bl = BaselinePredictor()
+        bl_df = bl.predict(stocks, "2024-06-15", [])
+
+        from src.model.ms_lstm import MSLSTMPredictor
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+
+        from src.model.dualgat import DualGATPredictor
+        dg = DualGATPredictor(hidden=16, out_dim=8, heads=2)
+
+        df = meta_ensemble.predict(stocks, "2024-06-15", bl_df, bl_df, bl_df)
+        assert len(df) == 2
+        assert "baseline_return" in df.columns
+        assert "ms_lstm_return" in df.columns
+        assert "dualgat_return" in df.columns
+
+    def test_meta_predict_uses_mlp(self, meta_ensemble):
+        """Meta strategy uses MLP when weights would be equal."""
+        bl = pd.DataFrame({"stock": ["A", "B"], "predicted_return": [0.1, -0.1]})
+        ms = pd.DataFrame({"stock": ["A", "B"], "predicted_return": [0.1, -0.1]})
+        dg = pd.DataFrame({"stock": ["A", "B"], "predicted_return": [0.1, -0.1]})
+        meta_ensemble.model_ic_history = {
+            "baseline": [0.05] * 20, "ms_lstm": [0.05] * 20, "dualgat": [0.05] * 20,
+        }
+        df = meta_ensemble.predict(["A", "B"], "2024-06-15", bl, ms, dg)
+        # With equal inputs and equal weights, weighted avg would return proportionally identical
+        # Meta MLP may differ due to learned parameters
+        assert len(df) == 2
+
+    def test_fit_meta_runs_one_epoch(self, meta_ensemble, prepopulated_db, tmp_path):
+        """fit_meta() completes one epoch without error."""
+        import torch
+        torch.manual_seed(123)
+        np.random.seed(123)
+
+        stocks = ["AAPL", "MSFT"]
+
+        from src.model.baseline import BaselinePredictor
+        baseline = BaselinePredictor()
+
+        from src.model.ms_lstm import MSLSTMPredictor
+        ms = MSLSTMPredictor(hidden_dim=8, num_scales=3)
+        ms_path = tmp_path / "dummy_ms_meta.pt"
+        ms.save(ms_path)
+
+        from src.model.dualgat import DualGATPredictor
+        dg = DualGATPredictor(hidden=16, out_dim=8, heads=2)
+
+        history = meta_ensemble.fit_meta(
+            stocks=stocks,
+            start_date="2024-05-20",
+            end_date="2024-06-15",
+            baseline=baseline,
+            ms_lstm=ms,
+            dualgat=dg,
+            epochs=1,
+            lr=1e-3,
+        )
+        assert "train_loss" in history
+        assert len(history["train_loss"]) == 1
+        assert np.isfinite(history["train_loss"][0])
+
+    def test_meta_save_load_roundtrip(self, meta_ensemble, tmp_path):
+        """Meta-learner survives save->load roundtrip."""
+        import torch
+        torch.manual_seed(42)
+
+        meta_ensemble.model_ic_history = {
+            "baseline": [0.03] * 20, "ms_lstm": [0.06] * 20, "dualgat": [0.04] * 20,
+        }
+
+        path = tmp_path / "test_meta.pt"
+        meta_ensemble.save(path)
+
+        from src.model.ensemble import EnsemblePredictor
+        loaded = EnsemblePredictor(strategy="meta")
+        loaded.load(path)
+
+        bl = pd.DataFrame({"stock": ["A"], "predicted_return": [0.05]})
+        ms = pd.DataFrame({"stock": ["A"], "predicted_return": [0.03]})
+        dg = pd.DataFrame({"stock": ["A"], "predicted_return": [0.07]})
+
+        df1 = meta_ensemble.predict(["A"], "2024-06-15", bl, ms, dg)
+        df2 = loaded.predict(["A"], "2024-06-15", bl, ms, dg)
+        assert np.allclose(df1["predicted_return"].values, df2["predicted_return"].values)

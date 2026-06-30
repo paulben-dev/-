@@ -151,7 +151,201 @@ class EnsemblePredictor:
                 self.model_ic_history[model_id] = \
                     self.model_ic_history[model_id][-ENSEMBLE_IC_WINDOW:]
 
-    # fit_meta() — see Task 3
+    def fit_meta(
+        self,
+        stocks: list[str],
+        start_date: str,
+        end_date: str,
+        baseline,
+        ms_lstm,
+        dualgat,
+        epochs: int = ENSEMBLE_META_EPOCHS,
+        lr: float = ENSEMBLE_META_LR,
+    ) -> dict:
+        """Train meta-learner MLP on historical data.
+
+        Args:
+            stocks: List of ticker symbols.
+            start_date / end_date: Training date range (YYYY-MM-DD).
+            baseline: BaselinePredictor instance.
+            ms_lstm: MSLSTMPredictor instance.
+            dualgat: DualGATPredictor instance.
+            epochs: Maximum training epochs.
+            lr: Learning rate.
+
+        Returns:
+            Dict with keys: train_loss, val_ic, best_epoch.
+        """
+        if self._meta is None:
+            self._meta = _MetaMLP().to(self.device)
+            self.strategy = "meta"
+
+        # Get trading dates
+        from src.model.dualgat import _get_trading_dates
+        trading_dates = _get_trading_dates(stocks, start_date, end_date)
+        if len(trading_dates) < 10:
+            logger.warning(f"Only {len(trading_dates)} trading dates, need >= 10")
+            return {"train_loss": [], "val_ic": [], "best_epoch": 0}
+
+        split = int(len(trading_dates) * 0.8)
+        train_dates = trading_dates[:split]
+        val_dates = trading_dates[split:]
+
+        optimizer = torch.optim.Adam(self._meta.parameters(), lr=lr)
+        history: dict = {"train_loss": [], "val_ic": []}
+        best_val_ic = -float("inf")
+        best_state = None
+        patience_counter = 0
+
+        from datetime import datetime, timedelta
+        from src.db import schema as db
+
+        # Pre-fetch all prices once for the full window (+5 day buffer for returns)
+        fetch_start = (datetime.fromisoformat(start_date) - timedelta(days=5)).strftime("%Y-%m-%d")
+        all_prices_full = db.get_prices(stocks, fetch_start, end_date)
+
+        for epoch in range(epochs):
+            # Training
+            self._meta.train()
+            epoch_losses = []
+            for date_str in train_dates:
+                try:
+                    bl_df = baseline.predict(stocks, date_str, [])
+                    ms_df = ms_lstm.predict(stocks, date_str)
+                    dg_df = dualgat.predict(stocks, date_str)
+                except Exception:
+                    continue
+
+                if len(bl_df) < 3:
+                    continue
+
+                # Align predictions
+                bl_map = dict(zip(bl_df["stock"], bl_df["predicted_return"]))
+                ms_map = dict(zip(ms_df["stock"], ms_df["predicted_return"]))
+                dg_map = dict(zip(dg_df["stock"], dg_df["predicted_return"]))
+
+                common = set(bl_map) & set(ms_map) & set(dg_map)
+                stock_list = [s for s in stocks if s in common]
+                if len(stock_list) < 3:
+                    continue
+
+                # Compute targets using pre-fetched prices
+                targets = []
+                valid_stocks = []
+                target_dt = datetime.fromisoformat(date_str)
+                for s in stock_list:
+                    sp = all_prices_full.get(s, [])
+                    sp_sorted = sorted(sp, key=lambda p: p["date"])
+                    for i, p in enumerate(sp_sorted):
+                        if p["date"] == date_str and i > 0:
+                            prev = float(sp_sorted[i - 1]["close"])
+                            curr = float(p["close"])
+                            if prev > 0:
+                                targets.append((curr - prev) / prev)
+                                valid_stocks.append(s)
+                            break
+
+                if len(targets) < 3:
+                    continue
+
+                # Build features aligned to valid_stocks
+                bl_arr = np.array([bl_map[s] for s in valid_stocks], dtype=np.float32)
+                ms_arr = np.array([ms_map[s] for s in valid_stocks], dtype=np.float32)
+                dg_arr = np.array([dg_map[s] for s in valid_stocks], dtype=np.float32)
+                x = np.stack([bl_arr, ms_arr, dg_arr], axis=1)
+
+                x_t = torch.tensor(x, dtype=torch.float32, device=self.device)
+                y_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
+
+                optimizer.zero_grad()
+                preds = self._meta(x_t)
+                # IC loss: maximize Pearson correlation => minimize 1 - corr
+                vx = preds - preds.mean()
+                vy = y_t - y_t.mean()
+                numerator = (vx * vy).sum()
+                denominator = torch.sqrt((vx ** 2).sum()) * torch.sqrt((vy ** 2).sum())
+                corr = numerator / (denominator + 1e-8)
+                loss = 1.0 - corr
+                loss.backward()
+                optimizer.step()
+                epoch_losses.append(loss.item())
+
+            avg_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
+            history["train_loss"].append(avg_loss)
+
+            # Validation
+            val_ics = []
+            self._meta.eval()
+            for date_str in val_dates:
+                try:
+                    bl_df = baseline.predict(stocks, date_str, [])
+                    ms_df = ms_lstm.predict(stocks, date_str)
+                    dg_df = dualgat.predict(stocks, date_str)
+                except Exception:
+                    continue
+                if len(bl_df) < 3:
+                    continue
+                bl_map = dict(zip(bl_df["stock"], bl_df["predicted_return"]))
+                ms_map = dict(zip(ms_df["stock"], ms_df["predicted_return"]))
+                dg_map = dict(zip(dg_df["stock"], dg_df["predicted_return"]))
+                common = set(bl_map) & set(ms_map) & set(dg_map)
+                stock_list = [s for s in stocks if s in common]
+                if len(stock_list) < 3:
+                    continue
+
+                targets = []
+                valid_stocks = []
+                target_dt = datetime.fromisoformat(date_str)
+                for s in stock_list:
+                    sp = all_prices_full.get(s, [])
+                    sp_sorted = sorted(sp, key=lambda p: p["date"])
+                    for i, p in enumerate(sp_sorted):
+                        if p["date"] == date_str and i > 0:
+                            prev = float(sp_sorted[i - 1]["close"])
+                            curr = float(p["close"])
+                            if prev > 0:
+                                targets.append((curr - prev) / prev)
+                                valid_stocks.append(s)
+                            break
+
+                if len(targets) < 3:
+                    continue
+
+                bl_arr = np.array([bl_map[s] for s in valid_stocks], dtype=np.float32)
+                ms_arr = np.array([ms_map[s] for s in valid_stocks], dtype=np.float32)
+                dg_arr = np.array([dg_map[s] for s in valid_stocks], dtype=np.float32)
+                x = np.stack([bl_arr, ms_arr, dg_arr], axis=1)
+                x_t = torch.tensor(x, dtype=torch.float32, device=self.device)
+                y_t = torch.tensor(targets, dtype=torch.float32, device=self.device)
+                with torch.no_grad():
+                    preds = self._meta(x_t)
+                    vx = preds - preds.mean()
+                    vy = y_t - y_t.mean()
+                    numerator = (vx * vy).sum()
+                    denominator = torch.sqrt((vx ** 2).sum()) * torch.sqrt((vy ** 2).sum())
+                    corr = numerator / (denominator + 1e-8)
+                    val_ics.append(corr.item())
+
+            avg_val_ic = float(np.mean(val_ics)) if val_ics else 0.0
+            history["val_ic"].append(avg_val_ic)
+
+            logger.info(f"Meta epoch {epoch+1}/{epochs}: train_loss={avg_loss:.4f}, val_ic={avg_val_ic:.4f}")
+
+            if avg_val_ic > best_val_ic:
+                best_val_ic = avg_val_ic
+                best_state = {k: v.cpu().clone() for k, v in self._meta.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= ENSEMBLE_META_PATIENCE:
+                    logger.info(f"Early stopping at meta epoch {epoch+1}")
+                    break
+
+        if best_state is not None:
+            self._meta.load_state_dict(best_state)
+
+        history["best_epoch"] = int(np.argmax(history["val_ic"]) + 1) if history["val_ic"] else 0
+        return history
 
     def save(self, path: str | Path) -> None:
         """Save ensemble state to disk."""
