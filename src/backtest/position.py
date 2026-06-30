@@ -14,7 +14,6 @@ from config import (
     POSITION_MAX_SINGLE,
     POSITION_SECTOR_NEUTRAL,
     POSITION_MAX_TURNOVER,
-    DEFAULT_TICKERS,
 )
 
 # Hardcoded GICS sector mapping for the 20-stock universe.
@@ -102,7 +101,7 @@ def size_positions(
 
     # --- 1. Volatility scaling ---
     if config.target_vol > 0:
-        weights = _apply_vol_scaling(weights, stocks, prices, config.target_vol)
+        weights = _apply_vol_scaling(weights, prices, config.target_vol)
 
     # --- 2. Single-stock cap ---
     if config.max_single_weight > 0:
@@ -147,7 +146,11 @@ def _estimate_portfolio_vol(
             return daily_vol * np.sqrt(252)
         return 0.15  # default assumption
 
-    # Align lengths — use the minimum length so all series are the same shape
+    # Align lengths to the minimum across stocks.  Using the shortest history
+    # is conservative: it avoids overfitting to stocks with longer lookbacks
+    # and ensures every return series covers a comparable recent window.  The
+    # trade-off is discarding older data for stocks with longer histories, but
+    # for portfolio vol estimation the most recent data matter most.
     min_len = min(len(r) for r in stock_returns.values())
     aligned = {s: np.array(r[-min_len:]) for s, r in stock_returns.items()}
 
@@ -163,7 +166,6 @@ def _estimate_portfolio_vol(
 
 def _apply_vol_scaling(
     weights: dict[str, float],
-    stocks: list[str],
     prices: dict[str, list[float]],
     target_vol: float,
 ) -> dict[str, float]:
