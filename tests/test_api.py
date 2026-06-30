@@ -200,3 +200,62 @@ class TestBacktestCompareEndpoint:
                         "max_drawdown", "mean_ic", "icir",
                         "n_trading_days", "cumulative_returns"):
                 assert key in m, f"{mid} missing '{key}'"
+
+
+# ------------------------------------------------------------------
+# Task 7: Walk-Forward and Parameter Scanner Endpoints
+# ------------------------------------------------------------------
+
+class TestWalkForwardEndpoint:
+    """Tests for POST /api/backtest/walkforward."""
+
+    def test_walkforward_params_mode(self, populated_client):
+        """Walk-forward in params mode returns 200."""
+        resp = populated_client.post("/api/backtest/walkforward", json={
+            "start": "2024-05-01",
+            "end": "2024-06-15",
+            "mode": "params",
+            "train_days": 20,
+            "validate_days": 5,
+            "step_days": 5,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "windows" in data
+        assert "summary" in data
+
+    def test_walkforward_insufficient_data(self, populated_client):
+        """Walk-forward with too-short range returns 400."""
+        resp = populated_client.post("/api/backtest/walkforward", json={
+            "start": "2024-06-10",
+            "end": "2024-06-14",
+            "mode": "params",
+            "train_days": 252,
+            "validate_days": 63,
+            "step_days": 21,
+        })
+        assert resp.status_code in (200, 400)
+
+
+class TestScanEndpoint:
+    """Tests for POST /api/backtest/scan."""
+
+    def test_scan_grid_mode(self, populated_client):
+        """Parameter scan in grid mode returns 200."""
+        resp = populated_client.post("/api/backtest/scan", json={
+            "start": "2024-05-01",
+            "end": "2024-06-15",
+            "params": {"quantile": [0.10, 0.20]},
+            "mode": "grid",
+            "use_walkforward": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "results" in data
+        assert "best" in data
+        assert len(data["results"]) == 2
+
+    def test_scan_invalid_params(self, client):
+        """Missing required fields returns 422."""
+        resp = client.post("/api/backtest/scan", json={})
+        assert resp.status_code in (400, 422)

@@ -307,6 +307,9 @@ async def get_backtest(
 async def compare_backtest(
     start: str = Query(None, description="Start date YYYY-MM-DD"),
     end: str = Query(None, description="End date YYYY-MM-DD"),
+    use_calendar: bool = Query(False, description="Use NYSE trading calendar"),
+    use_slippage: bool = Query(False, description="Enable slippage model"),
+    use_position: bool = Query(False, description="Enable position sizing"),
 ):
     """Run backtest for all available models and return comparison.
 
@@ -381,7 +384,20 @@ async def compare_backtest(
                 continue
 
             combined = pd.concat(all_preds, ignore_index=True)
-            bt_result = run_backtest(combined, DEFAULT_TICKERS, start, end)
+
+            # Build optional kwargs for precision features
+            bt_kwargs = {}
+            if use_calendar:
+                bt_kwargs["use_calendar"] = True
+            if use_slippage:
+                from src.backtest.slippage import SlippageConfig
+                bt_kwargs["slippage_config"] = SlippageConfig()
+            if use_position:
+                from src.backtest.position import PositionConfig
+                bt_kwargs["position_config"] = PositionConfig()
+
+            bt_result = run_backtest(combined, DEFAULT_TICKERS, start, end,
+                                     **bt_kwargs)
             results[model_id] = {
                 "annualized_return": bt_result["annualized_return"],
                 "sharpe_ratio": bt_result["sharpe_ratio"],
@@ -398,6 +414,114 @@ async def compare_backtest(
         raise HTTPException(404, "No backtest results could be computed")
 
     return {"start": start, "end": end, "models": results}
+
+
+# ------------------------------------------------------------------
+# Walk-Forward (v0.5)
+# ------------------------------------------------------------------
+
+@app.post("/api/backtest/walkforward")
+async def walkforward_backtest(body: dict):
+    """Run walk-forward validation.
+
+    Body:
+        start: str (YYYY-MM-DD)
+        end: str (YYYY-MM-DD)
+        mode: str = "params"  ("full" | "params")
+        train_days: int = 252
+        validate_days: int = 63
+        step_days: int = 21
+    """
+    from src.backtest.walkforward import WalkForwardConfig, run_walk_forward
+    from src.backtest.calendar import trading_days_between
+
+    start = body.get("start")
+    end = body.get("end")
+    if not start or not end:
+        raise HTTPException(400, "start and end are required")
+
+    cfg = WalkForwardConfig(
+        train_days=body.get("train_days", 252),
+        validate_days=body.get("validate_days", 63),
+        step_days=body.get("step_days", 21),
+        mode=body.get("mode", "params"),
+        min_train_days=body.get("min_train_days", 60),
+    )
+
+    # Check data sufficiency
+    all_td = trading_days_between(start, end)
+    if len(all_td) < cfg.train_days + cfg.validate_days:
+        raise HTTPException(
+            400,
+            f"Insufficient trading days ({len(all_td)}) for "
+            f"train={cfg.train_days}+val={cfg.validate_days}",
+        )
+
+    result = run_walk_forward(DEFAULT_TICKERS, start, end, cfg)
+    return {
+        "windows": result.windows,
+        "summary": result.summary,
+        "oos_predictions": result.oos_predictions.to_dict(orient="records")
+        if result.oos_predictions is not None else [],
+    }
+
+
+# ------------------------------------------------------------------
+# Parameter Scanner (v0.5)
+# ------------------------------------------------------------------
+
+@app.post("/api/backtest/scan")
+async def scan_backtest(body: dict):
+    """Run parameter scan.
+
+    Body:
+        start: str, end: str
+        params: dict[str, list]  (e.g. {"quantile": [0.05, 0.10]})
+        mode: str = "grid"  ("grid" | "random")
+        n_iter: int = 50  (for random mode)
+        use_walkforward: bool = False
+        wf_config: dict | None  (if use_walkforward)
+    """
+    from src.backtest.scanner import (
+        ParamSpec, build_param_grid, random_search, run_scan,
+    )
+    from src.backtest.walkforward import WalkForwardConfig
+
+    start = body.get("start")
+    end = body.get("end")
+    params = body.get("params")
+    if not start or not end or not params:
+        raise HTTPException(400, "start, end, and params are required")
+
+    specs = [ParamSpec(name, values) for name, values in params.items()]
+    full_grid = build_param_grid(specs)
+
+    mode = body.get("mode", "grid")
+    n_iter = body.get("n_iter", 50)
+
+    if mode == "random":
+        grid = random_search(full_grid, n_iter)
+    else:
+        grid = full_grid
+
+    wf_config = None
+    if body.get("use_walkforward"):
+        wf_body = body.get("wf_config", {})
+        wf_config = WalkForwardConfig(
+            train_days=wf_body.get("train_days", 252),
+            validate_days=wf_body.get("validate_days", 63),
+            step_days=wf_body.get("step_days", 21),
+            mode=wf_body.get("mode", "params"),
+            min_train_days=wf_body.get("min_train_days", 60),
+        )
+
+    metric = body.get("metric", "sharpe_ratio")
+    df = run_scan(DEFAULT_TICKERS, start, end, grid, wf_config, metric)
+
+    results = df.to_dict(orient="records")
+    best = results[0] if results else None
+
+    return {"results": results, "best": best}
 
 
 def _do_collect(
