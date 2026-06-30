@@ -11,5 +11,5 @@ class BaseCollector(ABC):
         """Fetch OHLCV price data."""
 
     @abstractmethod
-    def collect_social_posts(self, stocks: list[str], date: str) -> list[Post]:
+    def collect_social_posts(self, stocks: list[str], date: str | None = None) -> list[Post]:
         """Fetch social media posts for stocks on a given date."""

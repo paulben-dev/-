@@ -64,6 +64,6 @@ class YFinanceCollector(BaseCollector):
                 logger.error(f"Error fetching fundamentals for {stock}: {e}")
         return pd.DataFrame(records)
 
-    def collect_social_posts(self, stocks: list[str], date: str) -> list[Post]:
+    def collect_social_posts(self, stocks: list[str], date: str | None = None) -> list[Post]:
         """YFinance does not provide social posts."""
         return []

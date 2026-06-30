@@ -25,7 +25,7 @@ class StockTwitsCollector(BaseCollector):
                 resp = requests.get(
                     STOCKTWITS_API.format(ticker=stock),
                     params={"limit": self.post_limit},
-                    timeout=10,
+                    timeout=3,
                 )
                 resp.raise_for_status()
                 data = resp.json()
