@@ -72,3 +72,14 @@ DUALGAT_EARLY_STOP_PATIENCE = 10
 DUALGAT_GAT_HEADS = 4
 CORR_WINDOW_DAYS = 30
 DUALGAT_MODEL_PATH = ROOT_DIR / "data" / "dualgat_model.pt"
+
+# Ensemble (v0.4)
+ENSEMBLE_STRATEGY = "weighted"   # "weighted" or "meta"
+ENSEMBLE_TEMPERATURE = 0.1       # Softmax temperature for IC→weight
+ENSEMBLE_IC_WINDOW = 20          # Trading days for rolling IC
+ENSEMBLE_META_HIDDEN = 8         # Meta-learner hidden dim
+ENSEMBLE_META_LR = 1e-3
+ENSEMBLE_META_EPOCHS = 50
+ENSEMBLE_META_PATIENCE = 10
+ENSEMBLE_MODEL_PATH = ROOT_DIR / "data" / "ensemble_model.pt"
+ENSEMBLE_META_PATH = ROOT_DIR / "data" / "ensemble_meta.pt"
