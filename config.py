@@ -35,7 +35,12 @@ CORR_THRESHOLD_EXPERT = 0.67  # θ2
 
 # Backtest
 PORTFOLIO_QUANTILE = 0.10     # Top/bottom 10%
-TRANSACTION_COST = 0.0004     # 4 basis points
+TRANSACTION_COST = 0.0004     # 4 basis points (legacy, use SLIPPAGE_* below for v0.5+)
+
+# Slippage model (v0.5, simplified Almgren-Chriss)
+SLIPPAGE_FIXED_COST = 0.0004       # Fixed commission as fraction of trade value (4 bp)
+SLIPPAGE_IMPACT_FACTOR = 0.1       # Price impact coefficient
+SLIPPAGE_VOLUME_FRACTION = 0.01    # Assumed max fraction of daily volume we can trade (1%)
 
 # Database
 DB_PATH = ROOT_DIR / "data" / "predictions.db"
@@ -83,3 +88,9 @@ ENSEMBLE_META_EPOCHS = 50
 ENSEMBLE_META_PATIENCE = 10
 ENSEMBLE_MODEL_PATH = ROOT_DIR / "data" / "ensemble_model.pt"
 ENSEMBLE_META_PATH = ROOT_DIR / "data" / "ensemble_meta.pt"
+
+# Position Sizing (v0.5)
+POSITION_TARGET_VOL = 0.15         # Annualized volatility target (0=disabled)
+POSITION_MAX_SINGLE = 0.05         # Max absolute weight per stock (0=disabled)
+POSITION_SECTOR_NEUTRAL = False    # Equal long/short exposure per GICS sector
+POSITION_MAX_TURNOVER = 1.0        # Max daily turnover fraction (0=disabled)
