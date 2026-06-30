@@ -19,7 +19,6 @@ from config import (
     MSLSTM_MODEL_PATH,
     DUALGAT_MODEL_PATH,
     ENSEMBLE_MODEL_PATH,
-    DEFAULT_TICKERS,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,10 +65,10 @@ def run_walk_forward(
     from src.backtest.portfolio import run_backtest
 
     all_td = trading_days_between(start_date, end_date)
-    if len(all_td) < config.train_days + config.validate_days:
+    if len(all_td) < config.min_train_days + config.validate_days:
         logger.warning(
             f"Insufficient trading days ({len(all_td)}) for "
-            f"train={config.train_days}+val={config.validate_days}"
+            f"min_train={config.min_train_days}+val={config.validate_days}"
         )
         return WalkForwardResult()
 
@@ -84,8 +83,6 @@ def run_walk_forward(
         train_end = all_td[idx + config.train_days - 1]
         val_start = all_td[idx + config.train_days]
         val_end_idx = idx + config.train_days + config.validate_days - 1
-        if val_end_idx >= len(all_td):
-            val_end_idx = len(all_td) - 1
         val_end = all_td[val_end_idx]
 
         window_info = {
@@ -131,8 +128,11 @@ def run_walk_forward(
     sharpe_vals = [w.get("sharpe_ratio", 0.0) for w in windows if "sharpe_ratio" in w]
     ic_vals = [w.get("mean_ic", 0.0) for w in windows if "mean_ic" in w]
 
+    n_failed = sum(1 for w in windows if "error" in w)
     summary = {
         "n_windows": len(windows),
+        "n_successful": len(windows) - n_failed,
+        "n_failed": n_failed,
         "sharpe_mean": float(np.mean(sharpe_vals)) if sharpe_vals else 0.0,
         "sharpe_std": float(np.std(sharpe_vals)) if sharpe_vals else 0.0,
         "mean_ic_mean": float(np.mean(ic_vals)) if ic_vals else 0.0,
