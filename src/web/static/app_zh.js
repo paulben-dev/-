@@ -1,4 +1,4 @@
-// DualGAT Stock Predictor — frontend logic
+// DualGAT 股票预测系统 — 前端逻辑 (中文版)
 let returnsChart = null;
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -32,7 +32,7 @@ function fmtPct1(v) { return (v * 100).toFixed(1) + '%'; }
 
 async function loadPredictions() {
     const date = getDate();
-    setStatus('Loading predictions...');
+    setStatus('正在加载预测...');
     document.getElementById('pred-date').textContent = date;
     try {
         const resp = await fetch(`/api/predictions?date=${date}`);
@@ -42,41 +42,42 @@ async function loadPredictions() {
         const experts = data.predictions.filter(p => p.signal_source === 'expert').length;
         const momentum = data.predictions.length - experts;
         document.getElementById('pred-date').textContent =
-            `${date} (experts: ${experts} | momentum: ${momentum})`;
+            `${date}（专家: ${experts} | 动量: ${momentum}）`;
 
         if (!data.predictions || data.predictions.length === 0) {
             document.getElementById('predictions-table').innerHTML =
-                '<div class="empty-state"><div class="icon">📭</div>No predictions available</div>';
+                '<div class="empty-state"><div class="icon">📭</div>暂无预测数据</div>';
             document.getElementById('pred-summary').innerHTML = '';
             return;
         }
 
+        // 信号来源分布摘要
         document.getElementById('pred-summary').innerHTML =
-            `<span>🟢 Expert signals: <strong>${experts}</strong> stocks</span>` +
-            `<span>⚪ Momentum signals: <strong>${momentum}</strong> stocks</span>` +
-            `<span>📊 Coverage: <strong>${data.expert_coverage}</strong></span>`;
+            `<span>🟢 专家信号: <strong>${experts}</strong> 只股票</span>` +
+            `<span>⚪ 动量信号: <strong>${momentum}</strong> 只股票</span>` +
+            `<span>📊 覆盖率: <strong>${data.expert_coverage}</strong></span>`;
 
         const cols = [
-            { key: 'stock', label: 'Stock' },
-            { key: 'predicted_return', label: 'Predicted Return', fmt: v => `<span class="${v > 0 ? 'green' : 'red'}">${fmtPct(v)}</span>` },
-            { key: 'signal_source', label: 'Source', fmt: v => {
-                if (v === 'expert') return '<span class="badge badge-expert-signal">🧠 Expert</span>';
-                if (v === 'momentum') return '<span class="badge badge-momentum">📐 Momentum</span>';
+            { key: 'stock', label: '股票' },
+            { key: 'predicted_return', label: '预测收益率', fmt: v => `<span class="${v > 0 ? 'green' : 'red'}">${fmtPct(v)}</span>` },
+            { key: 'signal_source', label: '信号来源', fmt: v => {
+                if (v === 'expert') return '<span class="badge badge-expert-signal">🧠 专家信号</span>';
+                if (v === 'momentum') return '<span class="badge badge-momentum">📐 动量因子</span>';
                 return v;
             }},
         ];
         document.getElementById('predictions-table').innerHTML = buildTable(data.predictions, cols, 20);
-        setStatus('Predictions loaded');
+        setStatus('预测加载完成 ✓');
     } catch (e) {
         document.getElementById('predictions-table').innerHTML =
-            `<div class="empty-state"><div class="icon">⚠️</div>Load failed: ${e.message}</div>`;
-        setStatus('Error loading predictions');
+            `<div class="empty-state"><div class="icon">⚠️</div>加载失败: ${e.message}</div>`;
+        setStatus('预测加载失败 ✗');
     }
 }
 
 async function loadExperts() {
     const date = getDate();
-    setStatus('Loading experts...');
+    setStatus('正在加载专家...');
     document.getElementById('expert-date').textContent = date;
     try {
         const resp = await fetch(`/api/experts?date=${date}`);
@@ -84,38 +85,38 @@ async function loadExperts() {
         const data = await resp.json();
 
         document.getElementById('expert-date').textContent =
-            `${date} (experts: ${data.expert_count} | inverse: ${data.inverse_expert_count})`;
+            `${date}（专家: ${data.expert_count} | 反向: ${data.inverse_expert_count}）`;
 
         document.getElementById('expert-summary').innerHTML =
-            `<span>🟢 Bullish experts: <strong>${data.expert_count}</strong></span>` +
-            `<span>🔴 Inverse experts: <strong>${data.inverse_expert_count}</strong></span>` +
-            `<span>📋 Total: <strong>${data.total}</strong> signals</span>`;
+            `<span>🟢 正向专家: <strong>${data.expert_count}</strong> 人</span>` +
+            `<span>🔴 反向专家: <strong>${data.inverse_expert_count}</strong> 人</span>` +
+            `<span>📋 合计: <strong>${data.total}</strong> 条信号</span>`;
 
         if (!data.experts || data.experts.length === 0) {
             document.getElementById('experts-table').innerHTML =
-                '<div class="empty-state"><div class="icon">🔍</div>No expert signals today<br><small>Possible reasons: insufficient data or no users meeting thresholds</small></div>';
+                '<div class="empty-state"><div class="icon">🔍</div>当日无专家信号<br><small>可能原因：数据不足或没有满足阈值条件的用户</small></div>';
             return;
         }
 
-        const typeLabel = t => t === 'expert' ? '🟢 Expert' : '🔴 Inverse';
+        const typeLabel = t => t === 'expert' ? '🟢 专家' : '🔴 反向专家';
         const typeClass = t => t === 'expert' ? 'badge-expert' : 'badge-inverse';
         const dirClass = d => d === 'Bullish' ? 'badge-bullish' : 'badge-bearish';
-        const dirLabel = d => d === 'Bullish' ? '📈 Bullish' : '📉 Bearish';
+        const dirLabel = d => d === 'Bullish' ? '📈 看涨' : '📉 看跌';
 
         const cols = [
-            { key: 'user_id', label: 'User' },
-            { key: 'stock', label: 'Stock', fmt: v => `<strong>${v}</strong>` },
-            { key: 'expert_type', label: 'Type', fmt: v => `<span class="badge ${typeClass(v)}">${typeLabel(v)}</span>` },
-            { key: 'predicted_direction', label: 'Direction', fmt: v => `<span class="badge ${dirClass(v)}">${dirLabel(v)}</span>` },
-            { key: 'accuracy_recent', label: 'Recent Acc', fmt: v => fmtPct1(v) },
-            { key: 'accuracy_long', label: 'Long Acc', fmt: v => fmtPct1(v) },
+            { key: 'user_id', label: '用户' },
+            { key: 'stock', label: '股票', fmt: v => `<strong>${v}</strong>` },
+            { key: 'expert_type', label: '类型', fmt: v => `<span class="badge ${typeClass(v)}">${typeLabel(v)}</span>` },
+            { key: 'predicted_direction', label: '方向', fmt: v => `<span class="badge ${dirClass(v)}">${dirLabel(v)}</span>` },
+            { key: 'accuracy_recent', label: '近期准确率', fmt: v => fmtPct1(v) },
+            { key: 'accuracy_long', label: '长期准确率', fmt: v => fmtPct1(v) },
         ];
         document.getElementById('experts-table').innerHTML = buildTable(data.experts, cols, 30);
-        setStatus('Experts loaded');
+        setStatus('专家加载完成 ✓');
     } catch (e) {
         document.getElementById('experts-table').innerHTML =
-            `<div class="empty-state"><div class="icon">⚠️</div>Load failed: ${e.message}</div>`;
-        setStatus('Error loading experts');
+            `<div class="empty-state"><div class="icon">⚠️</div>加载失败: ${e.message}</div>`;
+        setStatus('专家加载失败 ✗');
     }
 }
 
@@ -132,16 +133,16 @@ async function loadBacktest() {
 
         const arClass = data.annualized_return > 0 ? 'green' : 'red';
         document.querySelector('#metrics-summary').innerHTML = `
-            <div class="metric"><div class="value ${arClass}">${fmtPct1(data.annualized_return)}</div><div class="label">Annualized Return</div></div>
-            <div class="metric"><div class="value">${data.sharpe_ratio.toFixed(2)}</div><div class="label">Sharpe Ratio</div></div>
-            <div class="metric"><div class="value">${fmtPct(data.mean_ic)}</div><div class="label">Mean IC</div></div>
-            <div class="metric"><div class="value red">${fmtPct1(data.max_drawdown)}</div><div class="label">Max Drawdown</div></div>
+            <div class="metric"><div class="value ${arClass}">${fmtPct1(data.annualized_return)}</div><div class="label">年化收益率</div></div>
+            <div class="metric"><div class="value">${data.sharpe_ratio.toFixed(2)}</div><div class="label">夏普比率</div></div>
+            <div class="metric"><div class="value">${fmtPct(data.mean_ic)}</div><div class="label">日均 IC</div></div>
+            <div class="metric"><div class="value red">${fmtPct1(data.max_drawdown)}</div><div class="label">最大回撤</div></div>
         `;
 
         const cumReturns = data.cumulative_returns || [];
         if (cumReturns.length === 0) {
             document.getElementById('chart-container').innerHTML =
-                '<div class="empty-state"><div class="icon">📉</div>No backtest data available</div>';
+                '<div class="empty-state"><div class="icon">📉</div>暂无回测数据</div>';
             return;
         }
 
@@ -156,7 +157,7 @@ async function loadBacktest() {
             data: {
                 labels: labels,
                 datasets: [{
-                    label: 'Cumulative Return',
+                    label: '累计收益',
                     data: cumReturns,
                     borderColor: lineColor,
                     backgroundColor: finalVal >= 1 ? 'rgba(40,167,69,0.08)' : 'rgba(220,53,69,0.08)',
@@ -174,13 +175,13 @@ async function loadBacktest() {
                     legend: { display: false },
                     tooltip: {
                         callbacks: {
-                            label: ctx => `Cumulative: ${(ctx.parsed.y * 100).toFixed(2)}%`,
-                            title: ctx => `Day #${ctx[0].label}`,
+                            label: ctx => `累计: ${(ctx.parsed.y * 100).toFixed(2)}%`,
+                            title: ctx => `交易日 #${ctx[0].label}`,
                         }
                     }
                 },
                 scales: {
-                    x: { display: true, title: { display: true, text: 'Trading Day', color: '#888' }, ticks: { maxTicksLimit: 15, color: '#aaa' }, grid: { display: false } },
+                    x: { display: true, title: { display: true, text: '交易日', color: '#888' }, ticks: { maxTicksLimit: 15, color: '#aaa' }, grid: { display: false } },
                     y: {
                         ticks: { callback: v => (v * 100).toFixed(0) + '%', color: '#aaa' },
                         grid: { color: '#f0f0f0' },
@@ -190,11 +191,11 @@ async function loadBacktest() {
         });
 
         document.getElementById('chart-legend').textContent =
-            `${data.n_trading_days} trading days · ${start} ~ ${endDate} · ICIR: ${data.icir.toFixed(2)}`;
+            `${data.n_trading_days} 个交易日 · 起止: ${start} ~ ${endDate} · ICIR: ${data.icir.toFixed(2)}`;
     } catch (e) {
-        console.error('Backtest load error:', e);
+        console.error('回测加载失败:', e);
         document.getElementById('chart-container').innerHTML =
-            `<div class="empty-state"><div class="icon">⚠️</div>Backtest load failed: ${e.message}</div>`;
+            `<div class="empty-state"><div class="icon">⚠️</div>回测加载失败: ${e.message}</div>`;
     }
 }
 
@@ -221,7 +222,7 @@ async function loadSystemStatus() {
 }
 
 async function triggerCollect() {
-    setStatus('Collecting data...');
+    setStatus('正在采集数据...');
     const endDate = getDate();
     const startDate = new Date(endDate);
     startDate.setDate(startDate.getDate() - 3);
@@ -245,11 +246,11 @@ async function triggerCollect() {
 
     es.onerror = () => {
         es.close();
-        setStatus('Collection connection error, please retry');
+        setStatus('采集连接失败，请重试');
     };
 }
 
-// ── Table builder utility ──
+// ── 表格构建工具 ──
 function buildTable(rows, cols, maxRows) {
     let html = '<table><thead><tr>';
     for (const c of cols) html += `<th>${c.label}</th>`;
@@ -265,12 +266,12 @@ function buildTable(rows, cols, maxRows) {
     }
     html += '</tbody></table>';
     if (rows.length > maxRows) {
-        html += `<div style="text-align:center;padding:8px;color:#888;font-size:12px;">Showing ${maxRows} of ${rows.length} rows</div>`;
+        html += `<div style="text-align:center;padding:8px;color:#888;font-size:12px;">显示前 ${maxRows} 条，共 ${rows.length} 条</div>`;
     }
     return html;
 }
 
-// ── Auto-refresh every 5 minutes ──
+// ── 自动刷新 (每5分钟) ──
 setInterval(() => {
     loadPredictions();
     loadExperts();

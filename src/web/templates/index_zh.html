@@ -1,22 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DualGAT Stock Predictor</title>
+    <title>DualGAT 股票预测系统</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
                background: #f5f7fa; color: #1a1a2e; padding: 20px; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { font-size: 28px; color: #16213e; }
+        .header p { color: #666; margin-top: 5px; }
         .lang-switch { position: absolute; top: 20px; right: 30px; }
         .lang-switch a { text-decoration: none; padding: 4px 12px; border: 1px solid #ddd; border-radius: 4px; color: #666; font-size: 13px; }
         .lang-switch a:hover { background: #16213e; color: white; border-color: #16213e; }
         .lang-switch a.active { background: #16213e; color: white; }
-        .header { text-align: center; margin-bottom: 30px; }
-        .header h1 { font-size: 28px; color: #16213e; }
-        .header p { color: #666; margin-top: 5px; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1400px; margin: 0 auto; }
         .card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
         .card h2 { font-size: 16px; color: #333; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
@@ -57,71 +57,71 @@
 </head>
 <body>
     <div class="lang-switch">
-        <a href="/" class="active">EN</a>
-        <a href="/zh">中文</a>
+        <a href="/" class="">EN</a>
+        <a href="/zh" class="active">中文</a>
     </div>
 
     <div class="header">
-        <h1>DualGAT Stock Predictor</h1>
-        <p>Expert Opinion-Driven Stock Return Prediction — MVP v0.1</p>
+        <h1>📈 DualGAT 股票预测系统</h1>
+        <p>基于专家意见的股票收益率预测 — 论文复现 v0.1</p>
     </div>
 
     <div class="controls" style="max-width:1400px; margin: 0 auto 15px;">
-        <input type="date" id="date-picker" title="Select prediction date" />
-        <button onclick="loadPredictions()" class="refresh">🔍 Predictions</button>
-        <button onclick="loadExperts()">🎯 Experts</button>
-        <button onclick="loadBacktest()">📊 Backtest</button>
-        <button onclick="triggerCollect()">📥 Collect</button>
+        <input type="date" id="date-picker" title="选择预测日期" />
+        <button onclick="loadPredictions()" class="refresh">🔍 加载预测</button>
+        <button onclick="loadExperts()">🎯 加载专家</button>
+        <button onclick="loadBacktest()">📊 刷新回测</button>
+        <button onclick="triggerCollect()">📥 采集数据</button>
         <span id="status" style="margin-left:auto; color:#888; font-size:13px;"></span>
     </div>
 
     <div class="quick-dates" style="max-width:1400px; margin: 0 auto 10px; font-size:12px; color:#888;">
-        Quick dates:
-        <button onclick="setDate(-1)" style="font-size:11px;padding:4px 8px;background:#6c757d;">Yesterday</button>
-        <button onclick="setDate(-3)" style="font-size:11px;padding:4px 8px;background:#6c757d;">3 days ago</button>
-        <button onclick="setDate(-7)" style="font-size:11px;padding:4px 8px;background:#6c757d;">1 week ago</button>
+        快速日期:
+        <button onclick="setDate(-1)" style="font-size:11px;padding:4px 8px;background:#6c757d;">昨天</button>
+        <button onclick="setDate(-3)" style="font-size:11px;padding:4px 8px;background:#6c757d;">3天前</button>
+        <button onclick="setDate(-7)" style="font-size:11px;padding:4px 8px;background:#6c757d;">一周前</button>
     </div>
 
     <div class="grid">
-        <!-- Predictions Panel -->
+        <!-- 预测面板 -->
         <div class="card">
-            <h2>Return Predictions <span id="pred-date" style="font-weight:400;color:#888;"></span></h2>
+            <h2>📊 收益率预测 <span id="pred-date" style="font-weight:400;color:#888;"></span></h2>
             <div class="summary-bar" id="pred-summary"></div>
-            <div id="predictions-table"><div class="loading">Loading predictions</div></div>
+            <div id="predictions-table"><div class="loading">加载预测中</div></div>
         </div>
 
-        <!-- Experts Panel -->
+        <!-- 专家面板 -->
         <div class="card">
-            <h2>Expert Signals <span id="expert-date" style="font-weight:400;color:#888;"></span></h2>
+            <h2>🎯 专家信号 <span id="expert-date" style="font-weight:400;color:#888;"></span></h2>
             <div class="summary-bar" id="expert-summary"></div>
-            <div id="experts-table"><div class="loading">Loading experts</div></div>
+            <div id="experts-table"><div class="loading">加载专家中</div></div>
         </div>
 
-        <!-- Backtest Panel -->
+        <!-- 回测面板 -->
         <div class="card full">
-            <h2>Backtest Performance</h2>
+            <h2>📈 回测表现</h2>
             <div class="metrics-row" id="metrics-summary">
-                <div class="metric"><div class="value">--</div><div class="label">Annualized Return</div></div>
-                <div class="metric"><div class="value">--</div><div class="label">Sharpe Ratio</div></div>
-                <div class="metric"><div class="value">--</div><div class="label">Mean IC</div></div>
-                <div class="metric"><div class="value red">--</div><div class="label">Max Drawdown</div></div>
+                <div class="metric"><div class="value">--</div><div class="label">年化收益率</div></div>
+                <div class="metric"><div class="value">--</div><div class="label">夏普比率</div></div>
+                <div class="metric"><div class="value">--</div><div class="label">日均 IC</div></div>
+                <div class="metric"><div class="value red">--</div><div class="label">最大回撤</div></div>
             </div>
             <div id="chart-container"><canvas id="returnsChart"></canvas></div>
             <div id="chart-legend" style="text-align:center;margin-top:8px;font-size:12px;color:#888;"></div>
         </div>
 
-        <!-- System Status Panel -->
+        <!-- 信号覆盖面板 -->
         <div class="card full" style="margin-top:0;">
-            <h2>System Status</h2>
+            <h2>📋 系统状态</h2>
             <div class="metrics-row" id="system-status">
-                <div class="metric"><div class="value" id="sys-stocks">--</div><div class="label">Stocks</div></div>
-                <div class="metric"><div class="value" id="sys-experts">--</div><div class="label">Active Experts</div></div>
-                <div class="metric"><div class="value" id="sys-coverage">--</div><div class="label">Signal Coverage</div></div>
-                <div class="metric"><div class="value" id="sys-posts">--</div><div class="label">Total Posts</div></div>
+                <div class="metric"><div class="value" id="sys-stocks">--</div><div class="label">股票数量</div></div>
+                <div class="metric"><div class="value" id="sys-experts">--</div><div class="label">当前专家数</div></div>
+                <div class="metric"><div class="value" id="sys-coverage">--</div><div class="label">信号覆盖率</div></div>
+                <div class="metric"><div class="value" id="sys-posts">--</div><div class="label">帖子总数</div></div>
             </div>
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app_zh.js"></script>
 </body>
 </html>
