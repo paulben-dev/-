@@ -1,51 +1,36 @@
-# Task 5: Integration Verification
+### Task 5 Report: Model-switching frontend UI
 
-## Done
+**Status:** Complete  
+**Commit:** `8c320b3`  
+**Files changed:** 4 (454 insertions, 98 deletions)
 
-Appended `TestMSLSTMIntegration` class to `tests/test_ms_lstm.py` with 2 integration tests:
+### What was implemented
 
-- **`test_full_pipeline_smoke`** -- end-to-end smoke test: loads DB fixture with AAPL/MSFT/GOOGL, trains MS-LSTM (2 epochs), runs `predict()`, and compares output shape with `BaselinePredictor`. Required adding GOOGL price data inside the test and widening the date range to `"2024-05-20"`--`"2024-06-15"` (fixture only had 44 days; original `"2024-06-10"`--`"2024-06-15"` had 6 dates, below the model's 10-date minimum for training).
+1. **`src/web/templates/index.html`** — Added CSS for model tabs, comparison cards, and status chips. Added model tab bar (`#model-tabs`) with four tabs (Baseline, MS-LSTM, DualGAT, Ensemble) plus a "Compare All" checkbox toggle. Added `#predictions-compare` container and `#compare-table-container` to the backtest card.
 
-- **`test_ic_loss_improves_during_training`** -- trains for 5 epochs with 2 stocks, verifies `len(losses) == 5` and all losses are finite (NaN-free). Also required widened date range.
+2. **`src/web/templates/index_zh.html`** — Same structural changes with Chinese labels (基准模型, MS-LSTM模型, DualGAT模型, 集成模型, 对比所有).
 
-## Test Suite Results
+3. **`src/web/static/app.js`** — Full rewrite with model switching:
+   - `currentModel` / `compareMode` state, `MODEL_COLORS` map
+   - `loadModels()` fetches `/api/models` and stores availability in `window._models`
+   - `updateModelTabs()` adds `.unavailable` class to gray out missing models
+   - `selectModel()` switches the active model, reloads predictions and backtest
+   - `toggleCompare()` switches between single-model and side-by-side prediction views
+   - `loadPredictionsCompare()` fetches all four models, renders grid of mini-cards
+   - `loadBacktest()` now calls `/api/backtest/compare`, renders a multi-line Chart.js chart with one curve per model (color-coded, current model highlighted with thicker line), and a comparison table with best-value highlighting
 
-```
-97 passed, 1 failed (expected test_api.py backtest endpoint failure)
-```
+4. **`src/web/static/app_zh.js`** — Same logic, all user-facing strings in Chinese.
 
-All 15 MS-LSTM tests pass (4 model, 4 loss, 5 predictor, 2 integration). The single pre-existing failure in `test_api.py: TestBacktestEndpoint::test_get_backtest` is unrelated.
+### Verification
 
-## Deviations from Brief
+- Python TestClient: `/` returns model-tabs, all four data-model attributes, compare-mode, predictions-compare, compare-table-container. `/static/app.js` contains MODEL_COLORS, currentModel, selectModel, toggleCompare. `/zh` returns Chinese labels (基准模型, MS-LSTM模型, DualGAT模型, 集成模型, 对比所有). `/static/app_zh.js` contains Chinese metric labels.
+- Node syntax check: Both app.js and app_zh.js pass `node -c`.
 
-- Fixed `ms_lstm.predict()` call to not pass `records` argument -- `MSLSTMPredictor.predict()` signature is `(stocks, date_str)`, unlike `BaselinePredictor.predict()` which accepts optional `expert_records`.
-- Added GOOGL price insertion inside `test_full_pipeline_smoke` because the shared `prepopulated_db` fixture only includes AAPL and MSFT.
-- Widened date range from `"2024-06-10"` to `"2024-05-20"` in both tests to exceed the model's 10-trading-date minimum.
+### Backward compatibility
 
-## Commit
+- Date picker, experts panel, data collection, system status, and auto-refresh all preserved.
+- Existing `/api/predictions?model=...` and `/api/backtest/compare` endpoints consumed from Tasks 1-4.
 
-```
-85a8d75 test: MS-LSTM integration and training smoke tests
-```
+### Concerns
 
----
-
-## Critical Bug Fix: Evaluation Price Fetch Window (2026-06-29)
-
-**Bug:** `get_prices(stocks, date_str, date_str)` only returns 1 row per stock, so `len(sp) >= 2` was always False. The `actuals` dict stayed empty, `np.mean([])` would crash with a RuntimeWarning.
-
-**Fix (lines 97-107):**
-- Changed `get_prices(stocks, date_str, date_str)` to `get_prices(stocks, yesterday_str, date_str)`, where `yesterday_str` is computed as `date_str - 5 days` (to bridge weekends/holidays).
-- Simplified return computation: use `sp[0]["close"]` (prior trading day) and `sp[-1]["close"]` (current date) directly, matching the pattern in `src/backtest/metrics.py:compute_daily_ic_series`.
-
-**Fix (lines 121-135):**
-- Added `_safe_mean()` helper: returns `np.mean(seq)` if non-empty, else `float("nan")`.
-- Used `_safe_mean` for all three IC list means and the outperformance comparison to avoid `RuntimeWarning` from `np.mean([])`.
-
-**Files changed:**
-- `scripts/train_dualgat.py` -- fixed price fetch window, simplified return computation, added empty-list guard
-
-**Commit:**
-```
-fix: Task 5 review — fix price fetch window for actual return computation
-```
+- None. All requirements from the task brief are implemented and verified.

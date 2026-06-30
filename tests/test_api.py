@@ -51,8 +51,8 @@ class TestPredictionEndpoint:
 
 
 class TestBacktestEndpoint:
-    def test_get_backtest(self, client):
-        resp = client.get("/api/backtest?start=2024-06-01&end=2024-06-15")
+    def test_get_backtest(self, populated_client):
+        resp = populated_client.get("/api/backtest?start=2024-06-01&end=2024-06-15")
         assert resp.status_code == 200
         data = resp.json()
         assert "sharpe_ratio" in data

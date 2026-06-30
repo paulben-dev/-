@@ -42,6 +42,15 @@ def prepopulated_db(tmp_path, monkeypatch):
     prices.append(Price("MSFT", datetime(2024, 6, 14), 414.0, 416.0, 413.0, 415.5, 25000000))
     prices.append(Price("MSFT", datetime(2024, 6, 15), 415.5, 419.0, 415.0, 418.0, 24000000))
 
+    # Extend through Jun 18 so calendar next-trading-day from Fri Jun 14 (to Mon
+    # Jun 17) has price data, making the calendar test oracle meaningful.
+    prices.append(Price("AAPL", datetime(2024, 6, 16), 186.5, 188.0, 186.0, 187.0, 46000000))
+    prices.append(Price("AAPL", datetime(2024, 6, 17), 187.0, 188.5, 186.5, 188.0, 52000000))
+    prices.append(Price("AAPL", datetime(2024, 6, 18), 188.0, 189.0, 187.5, 188.5, 51000000))
+    prices.append(Price("MSFT", datetime(2024, 6, 16), 418.0, 420.0, 417.0, 419.0, 23000000))
+    prices.append(Price("MSFT", datetime(2024, 6, 17), 419.0, 421.0, 418.0, 420.5, 26000000))
+    prices.append(Price("MSFT", datetime(2024, 6, 18), 420.5, 422.0, 419.5, 421.0, 25000000))
+
     insert_prices(prices)
 
     # Insert sample posts (enough for expert tracing: 20+ posts over 5+ days)

@@ -67,8 +67,8 @@ class TestBacktestCalendar:
             pred_df, stocks, "2024-06-10", "2024-06-16",
             use_calendar=True,
         )
-        # June 15-16 is weekend, should have at most 5 trading days
-        assert result["n_trading_days"] <= 5
+        # June 15-16 is weekend, should have exactly 5 trading days (Mon-Fri)
+        assert result["n_trading_days"] == 5
 
     def test_backtest_no_calendar_preserves_old_behavior(self, prepopulated_db):
         """Without use_calendar, backtest matches v0.4 behavior."""
@@ -109,3 +109,69 @@ class TestBacktestCalendar:
         )
         # Slippage should not increase returns
         assert with_slip["annualized_return"] <= no_slip["annualized_return"]
+
+    def test_position_config_smoke(self, prepopulated_db):
+        """run_backtest with PositionConfig() defaults completes successfully."""
+        stocks = ["AAPL", "MSFT"]
+        preds = [
+            {"stock": stocks[0], "date": "2024-06-12",
+             "predicted_return": 0.05, "signal_source": "test"},
+            {"stock": stocks[1], "date": "2024-06-12",
+             "predicted_return": -0.05, "signal_source": "test"},
+        ]
+        pred_df = pd.DataFrame(preds)
+
+        result = run_backtest(
+            pred_df, stocks, "2024-06-12", "2024-06-13",
+            position_config=PositionConfig(),
+        )
+        assert result["n_trading_days"] > 0
+
+    def test_combined_calendar_slippage_position(self, prepopulated_db):
+        """Backtest with all three features enabled completes without error."""
+        stocks = ["AAPL", "MSFT"]
+        dates = pd.date_range("2024-06-10", "2024-06-14", freq="D")
+        preds = []
+        for d in dates:
+            ds = d.strftime("%Y-%m-%d")
+            preds.append({
+                "stock": stocks[0], "date": ds,
+                "predicted_return": 0.01, "signal_source": "test",
+            })
+            preds.append({
+                "stock": stocks[1], "date": ds,
+                "predicted_return": -0.01, "signal_source": "test",
+            })
+        pred_df = pd.DataFrame(preds)
+
+        result = run_backtest(
+            pred_df, stocks, "2024-06-10", "2024-06-14",
+            use_calendar=True,
+            slippage_config=SlippageConfig(fixed_cost=0.0004),
+            position_config=PositionConfig(),
+        )
+        assert result["n_trading_days"] > 0
+        assert isinstance(result["sharpe_ratio"], float)
+
+    def test_calendar_all_weekdays_counted(self, prepopulated_db):
+        """With use_calendar=True on a Mon-Fri window, all 5 days trade."""
+        stocks = ["AAPL", "MSFT"]
+        dates = pd.date_range("2024-06-10", "2024-06-14", freq="D")
+        preds = []
+        for d in dates:
+            ds = d.strftime("%Y-%m-%d")
+            preds.append({
+                "stock": stocks[0], "date": ds,
+                "predicted_return": 0.01, "signal_source": "test",
+            })
+            preds.append({
+                "stock": stocks[1], "date": ds,
+                "predicted_return": -0.01, "signal_source": "test",
+            })
+        pred_df = pd.DataFrame(preds)
+
+        result = run_backtest(
+            pred_df, stocks, "2024-06-10", "2024-06-14",
+            use_calendar=True,
+        )
+        assert result["n_trading_days"] == 5

@@ -54,10 +54,18 @@ class TestEnsembleWeighted:
         }
         df = ensemble.predict(["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"], "2024-06-15",
                               baseline, ms_lstm, dualgat)
-        # With equal weights, ensemble pred ≈ mean of the three
-        expected_mean = (baseline["predicted_return"].values +
-                         ms_lstm["predicted_return"].values +
-                         dualgat["predicted_return"].values) / 3.0
+        # With equal weights, ensemble pred ≈ mean of the three.
+        # predict() sorts output by predicted_return descending, so we must
+        # align the expected array to the output stock order.
+        preds_map = {
+            "baseline": dict(zip(baseline["stock"], baseline["predicted_return"])),
+            "ms_lstm": dict(zip(ms_lstm["stock"], ms_lstm["predicted_return"])),
+            "dualgat": dict(zip(dualgat["stock"], dualgat["predicted_return"])),
+        }
+        expected_mean = np.array([
+            (preds_map["baseline"][s] + preds_map["ms_lstm"][s] + preds_map["dualgat"][s]) / 3.0
+            for s in df["stock"]
+        ])
         # After z-score normalization the correlation should be 1.0
         assert np.corrcoef(df["predicted_return"].values, expected_mean)[0, 1] > 0.99
 
@@ -71,11 +79,20 @@ class TestEnsembleWeighted:
         }
         df = ensemble.predict(["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"], "2024-06-15",
                               baseline, ms_lstm, dualgat)
-        # Ensemble should be closer to the average of baseline+dualgat than to ms_lstm
-        avg_good = (baseline["predicted_return"].values + dualgat["predicted_return"].values) / 2.0
+        # Ensemble should be closer to the average of baseline+dualgat than to ms_lstm.
+        # Build per-model prediction maps to align with the output stock order.
+        preds_map = {
+            "baseline": dict(zip(baseline["stock"], baseline["predicted_return"])),
+            "ms_lstm": dict(zip(ms_lstm["stock"], ms_lstm["predicted_return"])),
+            "dualgat": dict(zip(dualgat["stock"], dualgat["predicted_return"])),
+        }
+        avg_good = np.array([
+            (preds_map["baseline"][s] + preds_map["dualgat"][s]) / 2.0
+            for s in df["stock"]
+        ])
+        ms_aligned = np.array([preds_map["ms_lstm"][s] for s in df["stock"]])
         corr_with_good = np.corrcoef(df["predicted_return"].values, avg_good)[0, 1]
-        corr_with_bad = np.corrcoef(df["predicted_return"].values,
-                                    ms_lstm["predicted_return"].values)[0, 1]
+        corr_with_bad = np.corrcoef(df["predicted_return"].values, ms_aligned)[0, 1]
         assert corr_with_good > corr_with_bad
 
     def test_predict_empty_stocks(self, ensemble):

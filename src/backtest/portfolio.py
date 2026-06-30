@@ -127,7 +127,7 @@ def run_backtest(
                     w = (1.0 / max(len(long_stocks), 1) if stock in long_stocks
                          else -1.0 / max(len(short_stocks), 1) if stock in short_stocks
                          else 0.0)
-                slippage += estimate_slippage(w, vol, px, slippage_config)
+                slippage += abs(w) * estimate_slippage(w, vol, px, slippage_config)
 
         daily_ret = (long_ret - short_ret) / 2 - slippage
         daily_returns.append(daily_ret)
