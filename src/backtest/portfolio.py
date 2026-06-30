@@ -147,12 +147,20 @@ def run_backtest(
     # Compute metrics
     daily_ic = compute_daily_ic_series(pred_df, stocks, start_date, end_date)
 
+    # Avoid double-counting: slippage already includes fixed commission.
+    # Compute the net transaction_cost to pass to metrics so the total
+    # commission drag is never more than the explicit transaction_cost.
+    if slippage_config is not None:
+        net_transaction_cost = max(0.0, transaction_cost - slippage_config.fixed_cost)
+    else:
+        net_transaction_cost = transaction_cost
+
     return {
         "daily_returns": dr_series,
         "cumulative_returns": cumulative,
         "daily_long_short": pd.DataFrame(daily_long_short),
-        "annualized_return": compute_annualized_return(dr_series, transaction_cost),
-        "sharpe_ratio": compute_sharpe(dr_series, transaction_cost=transaction_cost),
+        "annualized_return": compute_annualized_return(dr_series, net_transaction_cost),
+        "sharpe_ratio": compute_sharpe(dr_series, transaction_cost=net_transaction_cost),
         "max_drawdown": float(_max_drawdown(cumulative)),
         "mean_ic": daily_ic.mean() if len(daily_ic) > 0 else 0.0,
         "icir": compute_icir(daily_ic),

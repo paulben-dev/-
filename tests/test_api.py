@@ -218,6 +218,7 @@ class TestWalkForwardEndpoint:
             "train_days": 20,
             "validate_days": 5,
             "step_days": 5,
+            "min_train_days": 20,
         })
         assert resp.status_code == 200
         data = resp.json()

@@ -102,7 +102,7 @@ def run_walk_forward(
                 # Run backtest on validation window
                 backtest_kwargs = param_grid or {}
                 bt_result = run_backtest(preds, stocks, val_start, val_end,
-                                         **backtest_kwargs)
+                                         use_calendar=True, **backtest_kwargs)
                 window_info.update({
                     "sharpe_ratio": bt_result.get("sharpe_ratio", 0.0),
                     "mean_ic": bt_result.get("mean_ic", 0.0),

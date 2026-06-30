@@ -107,9 +107,9 @@ def run_scan(
                     "params": combo,
                     "sharpe_ratio": sharpe,
                     "mean_ic": mean_ic,
-                    "max_drawdown": 0.0,
-                    "annualized_return": 0.0,
-                    "icir": 0.0,
+                    "max_drawdown": min((w.get("max_drawdown", 0.0) for w in wf_result.windows), default=0.0),
+                    "annualized_return": sum(w.get("annualized_return", 0.0) for w in wf_result.windows) / max(len(wf_result.windows), 1),
+                    "icir": sum(w.get("icir", 0.0) for w in wf_result.windows) / max(len(wf_result.windows), 1),
                 })
             else:
                 # Simple hold-out backtest
@@ -123,7 +123,7 @@ def run_scan(
                 if all_preds:
                     combined = pd.concat(all_preds, ignore_index=True)
                     bt = run_backtest(combined, stocks, start_date, end_date,
-                                      **combo)
+                                      use_calendar=True, **combo)
                     results.append({
                         "params": combo,
                         "sharpe_ratio": bt.get("sharpe_ratio", 0.0),

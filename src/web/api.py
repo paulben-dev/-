@@ -450,7 +450,7 @@ async def walkforward_backtest(body: dict):
 
     # Check data sufficiency
     all_td = trading_days_between(start, end)
-    if len(all_td) < cfg.train_days + cfg.validate_days:
+    if len(all_td) < cfg.min_train_days + cfg.validate_days:
         raise HTTPException(
             400,
             f"Insufficient trading days ({len(all_td)}) for "
