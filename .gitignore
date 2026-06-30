@@ -1,1 +1,11 @@
-__pycache__/\ndata/predictions.db\n2504.10078v2.pdf
+# Python cache
+__pycache__/
+
+# Generated data
+data/predictions.db
+
+# Paper / references
+2504.10078v2.pdf
+
+# Playwright MCP output
+.playwright-mcp/
